@@ -2406,6 +2406,7 @@ dependencies = [
  "application",
  "domain",
  "serde",
+ "serde_json",
  "storage",
  "tauri",
 ]

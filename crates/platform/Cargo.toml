@@ -10,3 +10,6 @@ domain.workspace = true
 serde.workspace = true
 storage.workspace = true
 tauri.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

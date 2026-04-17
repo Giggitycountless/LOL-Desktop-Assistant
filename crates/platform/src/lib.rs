@@ -134,3 +134,114 @@ pub fn create_activity_note(
     )
     .map_err(CommandError::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use domain::{ActivityKind, StartupPage};
+    use serde_json::json;
+    use std::{
+        env, fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn save_settings_accepts_frontend_payload_shape() {
+        let command: SaveSettingsCommand = serde_json::from_value(json!({
+            "settings": {
+                "startupPage": "activity",
+                "compactMode": true,
+                "activityLimit": 25
+            }
+        }))
+        .expect("frontend-shaped settings command deserializes");
+
+        assert_eq!(command.settings.startup_page, "activity");
+        assert!(command.settings.compact_mode);
+        assert_eq!(command.settings.activity_limit, 25);
+    }
+
+    #[test]
+    fn activity_note_accepts_frontend_payload_shape() {
+        let command: CreateActivityNoteCommand = serde_json::from_value(json!({
+            "title": "Review session",
+            "body": "Looked over local state"
+        }))
+        .expect("frontend-shaped activity command deserializes");
+
+        assert_eq!(command.title, "Review session");
+        assert_eq!(command.body.as_deref(), Some("Looked over local state"));
+    }
+
+    #[test]
+    fn activity_entries_response_serializes_frontend_shape() {
+        let response = ActivityEntriesResponse {
+            records: vec![ActivityEntry {
+                id: 7,
+                kind: ActivityKind::Note,
+                title: "Smoke note".to_string(),
+                body: Some("Created from a manual check".to_string()),
+                created_at: "2026-04-18 00:00:00".to_string(),
+            }],
+        };
+
+        let value = serde_json::to_value(response).expect("response serializes");
+
+        assert_eq!(value["records"][0]["id"], 7);
+        assert_eq!(value["records"][0]["kind"], "note");
+        assert_eq!(value["records"][0]["createdAt"], "2026-04-18 00:00:00");
+        assert!(value["records"][0].get("created_at").is_none());
+    }
+
+    #[test]
+    fn validation_errors_serialize_command_shape() {
+        let error = CommandError::from(ApplicationError::Validation(
+            "Activity note title is required".to_string(),
+        ));
+
+        let value = serde_json::to_value(error).expect("error serializes");
+
+        assert_eq!(value["code"], "validation");
+        assert_eq!(value["message"], "Activity note title is required");
+    }
+
+    #[test]
+    fn noop_settings_save_does_not_create_activity_entry() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+
+        let current_settings = get_settings(&state).expect("settings load");
+        let saved_settings = save_settings(
+            &state,
+            SaveSettingsCommand {
+                settings: SettingsPayload {
+                    startup_page: current_settings.startup_page.as_str().to_string(),
+                    compact_mode: current_settings.compact_mode,
+                    activity_limit: current_settings.activity_limit,
+                },
+            },
+        )
+        .expect("settings save succeeds");
+        let entries = list_activity_entries(&state, ListActivityEntriesCommand { limit: Some(10) })
+            .expect("activity entries load");
+
+        assert_eq!(saved_settings.startup_page, StartupPage::Dashboard);
+        assert!(entries.records.is_empty());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after unix epoch")
+            .as_nanos();
+
+        env::temp_dir().join(format!(
+            "lol_desktop_assistant_platform_test_{}_{}",
+            std::process::id(),
+            stamp
+        ))
+    }
+}
