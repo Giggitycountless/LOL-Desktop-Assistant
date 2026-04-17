@@ -5,10 +5,55 @@ fn healthcheck(state: State<'_, platform::AppState>) -> domain::HealthReport {
     platform::healthcheck(state.inner())
 }
 
+#[tauri::command]
+fn get_app_state(
+    state: State<'_, platform::AppState>,
+) -> Result<domain::AppSnapshot, platform::CommandError> {
+    platform::get_app_state(state.inner())
+}
+
+#[tauri::command]
+fn get_settings(
+    state: State<'_, platform::AppState>,
+) -> Result<domain::AppSettings, platform::CommandError> {
+    platform::get_settings(state.inner())
+}
+
+#[tauri::command]
+fn save_settings(
+    state: State<'_, platform::AppState>,
+    input: platform::SaveSettingsCommand,
+) -> Result<domain::AppSettings, platform::CommandError> {
+    platform::save_settings(state.inner(), input)
+}
+
+#[tauri::command]
+fn list_activity_entries(
+    state: State<'_, platform::AppState>,
+    input: platform::ListActivityEntriesCommand,
+) -> Result<platform::ActivityEntriesResponse, platform::CommandError> {
+    platform::list_activity_entries(state.inner(), input)
+}
+
+#[tauri::command]
+fn create_activity_note(
+    state: State<'_, platform::AppState>,
+    input: platform::CreateActivityNoteCommand,
+) -> Result<domain::ActivityEntry, platform::CommandError> {
+    platform::create_activity_note(state.inner(), input)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| platform::setup_app(app))
-        .invoke_handler(tauri::generate_handler![healthcheck])
+        .invoke_handler(tauri::generate_handler![
+            healthcheck,
+            get_app_state,
+            get_settings,
+            save_settings,
+            list_activity_entries,
+            create_activity_note
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run LoL Desktop Assistant");
 }

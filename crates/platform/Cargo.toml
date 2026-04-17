@@ -7,5 +7,6 @@ license.workspace = true
 [dependencies]
 application.workspace = true
 domain.workspace = true
+serde.workspace = true
 storage.workspace = true
 tauri.workspace = true
