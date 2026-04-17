@@ -1,11 +1,13 @@
 [package]
-name = "platform"
+name = "lol-desktop-assistant"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[build-dependencies]
+tauri-build.workspace = true
+
 [dependencies]
-application.workspace = true
 domain.workspace = true
-storage.workspace = true
+platform.workspace = true
 tauri.workspace = true
