@@ -15,13 +15,15 @@ export function Activity() {
     setIsSubmitting(true);
 
     try {
-      await createActivityNote({
+      const didSave = await createActivityNote({
         title,
         body: body.length > 0 ? body : null,
       });
 
-      setTitle("");
-      setBody("");
+      if (didSave) {
+        setTitle("");
+        setBody("");
+      }
     } finally {
       setIsSubmitting(false);
     }

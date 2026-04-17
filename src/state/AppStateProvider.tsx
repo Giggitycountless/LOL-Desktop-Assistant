@@ -11,8 +11,8 @@ type AppStateContextValue = {
   isLoading: boolean;
   error: string | null;
   reload: () => Promise<void>;
-  saveSettings: (settings: SaveSettingsInput) => Promise<void>;
-  createActivityNote: (input: ActivityNoteInput) => Promise<void>;
+  saveSettings: (settings: SaveSettingsInput) => Promise<boolean>;
+  createActivityNote: (input: ActivityNoteInput) => Promise<boolean>;
 };
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -44,8 +44,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       try {
         await saveSettings(settings);
         await reload();
+        return true;
       } catch (caught: unknown) {
         setError(errorMessage(caught));
+        return false;
       }
     },
     [reload],
@@ -56,8 +58,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       try {
         await createActivityNote(input);
         await reload();
+        return true;
       } catch (caught: unknown) {
         setError(errorMessage(caught));
+        return false;
       }
     },
     [reload],
