@@ -1,37 +1,9 @@
-import { useEffect, useState } from "react";
-
-import { fetchHealthcheck, type HealthcheckResult } from "../backend/healthcheck";
-
-type HealthState =
-  | { kind: "loading" }
-  | { kind: "ready"; value: HealthcheckResult }
-  | { kind: "failed"; message: string };
+import { useAppState } from "../state/AppStateProvider";
 
 export function Dashboard() {
-  const [health, setHealth] = useState<HealthState>({ kind: "loading" });
-
-  useEffect(() => {
-    let isMounted = true;
-
-    fetchHealthcheck()
-      .then((value) => {
-        if (isMounted) {
-          setHealth({ kind: "ready", value });
-        }
-      })
-      .catch((error: unknown) => {
-        if (isMounted) {
-          setHealth({
-            kind: "failed",
-            message: error instanceof Error ? error.message : "Healthcheck failed",
-          });
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const { snapshot, isLoading } = useAppState();
+  const health = snapshot?.health;
+  const recentActivity = snapshot?.recentActivity ?? [];
 
   return (
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
@@ -41,44 +13,49 @@ export function Dashboard() {
             <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Dashboard</p>
             <h1 className="mt-2 text-3xl font-semibold text-zinc-950">LoL Desktop Assistant</h1>
           </div>
-          <HealthBadge health={health} />
+          <HealthBadge status={health?.status ?? (isLoading ? "loading" : "degraded")} />
         </header>
 
         <section className="grid gap-4 md:grid-cols-3">
-          <StatusTile
-            label="Application"
-            value={health.kind === "ready" ? health.value.status : health.kind}
-            tone={health.kind === "ready" && health.value.status === "ok" ? "good" : "warn"}
-          />
+          <StatusTile label="Application" value={health?.status ?? "loading"} tone={health?.status === "ok" ? "good" : "warn"} />
           <StatusTile
             label="Database"
-            value={health.kind === "ready" ? health.value.databaseStatus : "pending"}
-            tone={health.kind === "ready" && health.value.databaseStatus === "ok" ? "good" : "warn"}
+            value={health?.databaseStatus ?? "pending"}
+            tone={health?.databaseStatus === "ok" ? "good" : "warn"}
           />
           <StatusTile
             label="Schema"
-            value={health.kind === "ready" ? String(health.value.schemaVersion ?? "none") : "pending"}
-            tone={health.kind === "ready" && health.value.schemaVersion !== null ? "good" : "warn"}
+            value={health ? String(health.schemaVersion ?? "none") : "pending"}
+            tone={health?.schemaVersion ? "good" : "warn"}
           />
         </section>
 
         <section className="grid gap-4 lg:grid-cols-[1.25fr_0.75fr]">
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Current Session</h2>
+            <h2 className="text-base font-semibold text-zinc-950">Current State</h2>
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <Metric label="Mode" value="Local" />
-              <Metric label="Storage" value={health.kind === "ready" ? "Ready" : "Pending"} />
-              <Metric label="Build" value="Milestone 1" />
-              <Metric label="Platform" value="Windows" />
+              <Metric label="Startup" value={snapshot?.settings.startupPage ?? "Loading"} />
+              <Metric label="Density" value={snapshot?.settings.compactMode ? "Compact" : "Standard"} />
+              <Metric label="Activity limit" value={snapshot ? String(snapshot.settings.activityLimit) : "Loading"} />
+              <Metric label="Activity entries" value={String(recentActivity.length)} />
             </div>
           </div>
 
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Healthcheck</h2>
+            <h2 className="text-base font-semibold text-zinc-950">Recent Activity</h2>
             <div className="mt-5 min-h-24 rounded-md border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">
-              {health.kind === "loading" && "Checking"}
-              {health.kind === "failed" && health.message}
-              {health.kind === "ready" && `Status ${health.value.status}`}
+              {isLoading && "Loading activity"}
+              {!isLoading && recentActivity.length === 0 && "No activity recorded"}
+              {!isLoading && recentActivity.length > 0 && (
+                <div className="grid gap-3">
+                  {recentActivity.slice(0, 3).map((entry) => (
+                    <div key={entry.id} className="min-w-0">
+                      <p className="truncate font-semibold text-zinc-950">{entry.title}</p>
+                      <p className="mt-1 text-xs capitalize text-zinc-500">{entry.kind}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </section>
@@ -87,8 +64,8 @@ export function Dashboard() {
   );
 }
 
-function HealthBadge({ health }: { health: HealthState }) {
-  const isReady = health.kind === "ready" && health.value.status === "ok";
+function HealthBadge({ status }: { status: "ok" | "degraded" | "loading" }) {
+  const isReady = status === "ok";
 
   return (
     <div
@@ -118,7 +95,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
       <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-zinc-950">{value}</p>
+      <p className="mt-1 text-sm font-semibold capitalize text-zinc-950">{value}</p>
     </div>
   );
 }
