@@ -1,0 +1,4 @@
+interface:
+  display_name: "Karpathy Codex Workflow"
+  short_description: "Careful coding workflow for simple, surgical, verified changes."
+  default_prompt: "Use $karpathy-codex-workflow for a non-trivial coding, review, debugging, or refactoring task."
