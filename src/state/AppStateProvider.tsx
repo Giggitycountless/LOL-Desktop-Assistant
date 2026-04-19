@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { clearActivityEntries, createActivityNote, listActivityEntries } from "../backend/activity";
 import { isCommandError } from "../backend/commands";
 import { exportLocalData, importLocalData } from "../backend/dataTools";
+import { fetchLeagueSelfSnapshot } from "../backend/leagueClient";
 import { saveSettings } from "../backend/settings";
 import { fetchAppState } from "../backend/system";
 import type {
@@ -11,18 +12,23 @@ import type {
   ActivityNoteInput,
   AppSnapshot,
   Feedback,
+  LeagueSelfSnapshot,
+  LeagueSelfSnapshotInput,
   SaveSettingsInput,
 } from "../backend/types";
 
 type AppStateContextValue = {
   snapshot: AppSnapshot | null;
   activityEntries: ActivityEntry[];
+  leagueSelfSnapshot: LeagueSelfSnapshot | null;
   isLoading: boolean;
   isActivityLoading: boolean;
+  isLeagueClientLoading: boolean;
   feedback: Feedback | null;
   clearFeedback: () => void;
   refresh: () => Promise<boolean>;
   loadActivityEntries: (input: ActivityListInput) => Promise<boolean>;
+  refreshLeagueClient: (input?: LeagueSelfSnapshotInput) => Promise<boolean>;
   saveSettings: (settings: SaveSettingsInput) => Promise<boolean>;
   createActivityNote: (input: ActivityNoteInput) => Promise<boolean>;
   clearActivityEntries: (confirm: boolean) => Promise<boolean>;
@@ -35,8 +41,10 @@ const AppStateContext = createContext<AppStateContextValue | null>(null);
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
+  const [leagueSelfSnapshot, setLeagueSelfSnapshot] = useState<LeagueSelfSnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isActivityLoading, setIsActivityLoading] = useState(false);
+  const [isLeagueClientLoading, setIsLeagueClientLoading] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
   const refresh = useCallback(async () => {
@@ -53,10 +61,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
   const loadActivityEntriesAction = useCallback(async (input: ActivityListInput) => {
     setIsActivityLoading(true);
 
@@ -71,6 +75,25 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setIsActivityLoading(false);
     }
   }, []);
+
+  const refreshLeagueClientAction = useCallback(async (input: LeagueSelfSnapshotInput = { matchLimit: 6 }) => {
+    setIsLeagueClientLoading(true);
+
+    try {
+      setLeagueSelfSnapshot(await fetchLeagueSelfSnapshot(input));
+      return true;
+    } catch (caught: unknown) {
+      setFeedback({ kind: "error", message: errorMessage(caught) });
+      return false;
+    } finally {
+      setIsLeagueClientLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    void refreshLeagueClientAction({ matchLimit: 6 });
+  }, [refresh, refreshLeagueClientAction]);
 
   const saveSettingsAction = useCallback(
     async (settings: SaveSettingsInput) => {
@@ -156,12 +179,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     () => ({
       snapshot,
       activityEntries,
+      leagueSelfSnapshot,
       isLoading,
       isActivityLoading,
+      isLeagueClientLoading,
       feedback,
       clearFeedback: () => setFeedback(null),
       refresh,
       loadActivityEntries: loadActivityEntriesAction,
+      refreshLeagueClient: refreshLeagueClientAction,
       saveSettings: saveSettingsAction,
       createActivityNote: createActivityNoteAction,
       clearActivityEntries: clearActivityEntriesAction,
@@ -176,9 +202,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       feedback,
       importLocalDataAction,
       isActivityLoading,
+      isLeagueClientLoading,
       isLoading,
+      leagueSelfSnapshot,
       loadActivityEntriesAction,
       refresh,
+      refreshLeagueClientAction,
       saveSettingsAction,
       snapshot,
     ],
