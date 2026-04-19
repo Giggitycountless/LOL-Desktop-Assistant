@@ -71,6 +71,21 @@ fn clear_activity_entries(
     platform::clear_activity_entries(state.inner(), input)
 }
 
+#[tauri::command]
+fn get_league_client_status(
+    state: State<'_, platform::AppState>,
+) -> Result<domain::LeagueClientStatus, platform::CommandError> {
+    platform::get_league_client_status(state.inner())
+}
+
+#[tauri::command]
+fn get_league_self_snapshot(
+    state: State<'_, platform::AppState>,
+    input: platform::LeagueSelfSnapshotCommand,
+) -> Result<domain::LeagueSelfSnapshot, platform::CommandError> {
+    platform::get_league_self_snapshot(state.inner(), input)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| platform::setup_app(app))
@@ -84,7 +99,9 @@ fn main() {
             create_activity_note,
             export_local_data,
             import_local_data,
-            clear_activity_entries
+            clear_activity_entries,
+            get_league_client_status,
+            get_league_self_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LoL Desktop Assistant");

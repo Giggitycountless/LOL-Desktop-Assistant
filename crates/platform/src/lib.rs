@@ -1,9 +1,13 @@
 use std::{error::Error, path::Path};
 
-use application::{ActivityListInput, ActivityNoteInput, ApplicationError, SettingsInput};
+use adapters::LocalLeagueClient;
+use application::{
+    ActivityListInput, ActivityNoteInput, ApplicationError, LeagueSelfSnapshotInput, SettingsInput,
+};
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, LocalDataExport, SettingsValues,
+    HealthReport, ImportLocalDataResult, LeagueClientStatus, LeagueSelfSnapshot, LocalDataExport,
+    SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -12,12 +16,14 @@ use tauri::{Manager, Runtime};
 #[derive(Debug, Clone)]
 pub struct AppState {
     store: SqliteStore,
+    league_client: LocalLeagueClient,
 }
 
 impl AppState {
     pub fn initialize(data_dir: impl AsRef<Path>) -> Result<Self, storage::StorageError> {
         Ok(Self {
             store: SqliteStore::initialize(data_dir)?,
+            league_client: LocalLeagueClient::new(),
         })
     }
 }
@@ -60,6 +66,12 @@ pub struct ImportLocalDataCommand {
 #[serde(rename_all = "camelCase")]
 pub struct ClearActivityEntriesCommand {
     pub confirm: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueSelfSnapshotCommand {
+    pub match_limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,10 +186,30 @@ pub fn clear_activity_entries(
     application::clear_activity_entries(&state.store, command.confirm).map_err(CommandError::from)
 }
 
+pub fn get_league_client_status(state: &AppState) -> Result<LeagueClientStatus, CommandError> {
+    application::get_league_client_status(&state.league_client).map_err(CommandError::from)
+}
+
+pub fn get_league_self_snapshot(
+    state: &AppState,
+    command: LeagueSelfSnapshotCommand,
+) -> Result<LeagueSelfSnapshot, CommandError> {
+    application::get_league_self_snapshot(
+        &state.league_client,
+        LeagueSelfSnapshotInput {
+            match_limit: command.match_limit,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{ActivityKind, StartupPage};
+    use domain::{
+        ActivityKind, KdaTag, LeagueClientConnection, LeagueClientPhase, MatchResult,
+        RecentMatchSummary, RecentPerformanceSummary, StartupPage,
+    };
     use serde_json::json;
     use std::{
         env, fs,
@@ -322,6 +354,89 @@ mod tests {
         .expect("frontend-shaped clear command deserializes");
 
         assert!(command.confirm);
+    }
+
+    #[test]
+    fn league_self_snapshot_accepts_frontend_payload_shape() {
+        let command: LeagueSelfSnapshotCommand = serde_json::from_value(json!({
+            "matchLimit": 6
+        }))
+        .expect("frontend-shaped league snapshot command deserializes");
+
+        assert_eq!(command.match_limit, Some(6));
+    }
+
+    #[test]
+    fn league_status_serializes_frontend_shape() {
+        let value = serde_json::to_value(LeagueClientStatus {
+            is_running: true,
+            lockfile_found: true,
+            connection: LeagueClientConnection::Connected,
+            phase: LeagueClientPhase::Connected,
+            message: None,
+        })
+        .expect("league status serializes");
+
+        assert_eq!(value["isRunning"], true);
+        assert_eq!(value["lockfileFound"], true);
+        assert_eq!(value["connection"], "connected");
+        assert_eq!(value["phase"], "connected");
+        assert!(value.get("is_running").is_none());
+    }
+
+    #[test]
+    fn league_self_snapshot_serializes_frontend_shape() {
+        let value = serde_json::to_value(LeagueSelfSnapshot {
+            status: LeagueClientStatus {
+                is_running: true,
+                lockfile_found: true,
+                connection: LeagueClientConnection::Connected,
+                phase: LeagueClientPhase::Connected,
+                message: None,
+            },
+            summoner: None,
+            ranked_queues: Vec::new(),
+            recent_matches: vec![RecentMatchSummary {
+                game_id: 12,
+                champion_name: "Ahri".to_string(),
+                queue_name: Some("Ranked Solo/Duo".to_string()),
+                result: MatchResult::Win,
+                kills: 7,
+                deaths: 1,
+                assists: 8,
+                kda: Some(15.0),
+                played_at: Some("2026-04-19T12:00:00Z".to_string()),
+            }],
+            recent_performance: RecentPerformanceSummary {
+                match_count: 1,
+                average_kda: Some(15.0),
+                kda_tag: KdaTag::High,
+                recent_champions: vec!["Ahri".to_string()],
+            },
+            refreshed_at: "123".to_string(),
+        })
+        .expect("league snapshot serializes");
+
+        assert_eq!(value["recentMatches"][0]["championName"], "Ahri");
+        assert_eq!(value["recentPerformance"]["averageKda"], 15.0);
+        assert_eq!(value["recentPerformance"]["kdaTag"], "high");
+        assert_eq!(value["refreshedAt"], "123");
+        assert!(value.get("recent_matches").is_none());
+    }
+
+    #[test]
+    fn league_client_errors_serialize_command_shape() {
+        let error = CommandError::from(ApplicationError::ClientAccess(
+            "League Client rejected local authentication".to_string(),
+        ));
+
+        let value = serde_json::to_value(error).expect("error serializes");
+
+        assert_eq!(value["code"], "clientAccess");
+        assert_eq!(
+            value["message"],
+            "League Client rejected local authentication"
+        );
     }
 
     fn unique_temp_dir() -> PathBuf {
