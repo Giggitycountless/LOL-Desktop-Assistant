@@ -115,21 +115,22 @@ impl LocalLeagueClient {
                 current_matches_path(MAX_COMPLETED_MATCH_SCAN).as_str(),
             )
             .map_err(read_error_from_request)?;
-
-        history
+        let summary_match = history
             .games
-            .and_then(|games| {
-                games
-                    .games
-                    .into_iter()
-                    .find(|game| game.game_id == Some(game_id))
-            })
+            .and_then(|games| find_completed_game(games.games, game_id))
             .and_then(|game| map_completed_match(game, &summoner, &champion_names))
             .ok_or_else(|| {
                 LeagueClientReadError::Integration(
                     "Completed match was not found in current user's recent history".to_string(),
                 )
-            })
+            })?;
+
+        let detail_match = session
+            .get_json::<LcuGame>(completed_match_path(game_id).as_str())
+            .ok()
+            .and_then(|game| map_completed_match(game, &summoner, &champion_names));
+
+        Ok(best_completed_match(summary_match, detail_match))
     }
 
     fn read_participant_recent_stats(
@@ -1078,6 +1079,24 @@ fn map_completed_match(
     })
 }
 
+fn find_completed_game(games: Vec<LcuGame>, game_id: i64) -> Option<LcuGame> {
+    games.into_iter().find(|game| game.game_id == Some(game_id))
+}
+
+fn best_completed_match(
+    summary_match: application::LeagueCompletedMatch,
+    detail_match: Option<application::LeagueCompletedMatch>,
+) -> application::LeagueCompletedMatch {
+    match detail_match {
+        Some(detail_match)
+            if detail_match.participants.len() > summary_match.participants.len() =>
+        {
+            detail_match
+        }
+        _ => summary_match,
+    }
+}
+
 fn player_for_participant(game: &LcuGame, participant_id: i64) -> Option<&LcuPlayer> {
     game.participant_identities.iter().find_map(|identity| {
         if identity.participant_id == Some(participant_id) {
@@ -1229,6 +1248,10 @@ fn current_matches_path(limit: i64) -> String {
     format!(
         "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={limit}"
     )
+}
+
+fn completed_match_path(game_id: i64) -> String {
+    format!("/lol-match-history/v1/games/{game_id}")
 }
 
 fn puuid_matches_path(player_puuid: &str, limit: i64) -> String {
@@ -1514,6 +1537,34 @@ mod tests {
     }
 
     #[test]
+    fn completed_match_path_uses_post_match_detail_endpoint() {
+        assert_eq!(
+            completed_match_path(698521151),
+            "/lol-match-history/v1/games/698521151"
+        );
+    }
+
+    #[test]
+    fn post_match_detail_prefers_full_detail_over_summary() {
+        let summary = completed_match_with_participant_count(1);
+        let detail = completed_match_with_participant_count(10);
+
+        let selected = best_completed_match(summary, Some(detail));
+
+        assert_eq!(selected.participants.len(), 10);
+    }
+
+    #[test]
+    fn post_match_detail_keeps_summary_when_detail_is_not_richer() {
+        let summary = completed_match_with_participant_count(1);
+        let detail = completed_match_with_participant_count(1);
+
+        let selected = best_completed_match(summary, Some(detail));
+
+        assert_eq!(selected.participants.len(), 1);
+    }
+
+    #[test]
     fn optional_ranked_failure_returns_partial_snapshot() {
         let data = compose_self_data(
             sample_summoner(),
@@ -1575,6 +1626,41 @@ mod tests {
     fn empty_match_history() -> LcuMatchHistoryResponse {
         LcuMatchHistoryResponse {
             games: Some(LcuGames { games: Vec::new() }),
+        }
+    }
+
+    fn completed_match_with_participant_count(count: i64) -> application::LeagueCompletedMatch {
+        application::LeagueCompletedMatch {
+            game_id: 698521151,
+            queue_name: Some("Ranked Solo/Duo".to_string()),
+            played_at: Some("2026-04-19T01:21:32Z".to_string()),
+            game_duration_seconds: Some(1807),
+            result: MatchResult::Win,
+            participants: (1..=count)
+                .map(|participant_id| application::LeagueCompletedParticipant {
+                    participant_id,
+                    team_id: if participant_id <= 5 { 100 } else { 200 },
+                    display_name: format!("Participant {participant_id}"),
+                    player_puuid: None,
+                    profile_icon_id: None,
+                    champion_id: Some(103),
+                    champion_name: "Ahri".to_string(),
+                    role: None,
+                    lane: None,
+                    result: MatchResult::Win,
+                    kills: 1,
+                    deaths: 1,
+                    assists: 1,
+                    kda: Some(2.0),
+                    cs: 100,
+                    gold_earned: 10_000,
+                    damage_to_champions: 10_000,
+                    vision_score: 10,
+                    items: Vec::new(),
+                    runes: Vec::new(),
+                    spells: Vec::new(),
+                })
+                .collect(),
         }
     }
 }

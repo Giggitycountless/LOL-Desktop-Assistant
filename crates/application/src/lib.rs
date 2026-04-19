@@ -690,6 +690,15 @@ fn post_match_detail_from_completed_match(
 
     let teams = post_match_teams(&participants);
     let comparison = post_match_comparison(&participants);
+    let warnings = if participants.len() < 2 {
+        vec![LeagueDataWarning {
+            section: LeagueDataSection::Participants,
+            message: "Only partial participant details were available from the local client"
+                .to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
 
     Ok(PostMatchDetail {
         game_id: completed_match.game_id,
@@ -699,7 +708,7 @@ fn post_match_detail_from_completed_match(
         result: completed_match.result,
         teams,
         comparison,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -1449,6 +1458,21 @@ mod tests {
             detail.teams[0].participants[0].note_summary.tags,
             vec!["carry"]
         );
+    }
+
+    #[test]
+    fn post_match_detail_warns_when_only_partial_participants_are_available() {
+        let store = FakeStore::new(default_settings());
+        let mut completed_match = sample_completed_match();
+        completed_match.participants.truncate(1);
+        let reader = FakeLeagueClientReader::with_completed_match(completed_match);
+
+        let detail = get_post_match_detail(&store, &reader, PostMatchDetailInput { game_id: 10 })
+            .expect("post-match detail reads");
+
+        assert_eq!(detail.teams.len(), 1);
+        assert_eq!(detail.warnings.len(), 1);
+        assert_eq!(detail.warnings[0].section, LeagueDataSection::Participants);
     }
 
     #[test]
