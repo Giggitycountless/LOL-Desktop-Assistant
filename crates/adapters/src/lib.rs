@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt,
     fs,
     path::PathBuf,
     time::Duration,
@@ -8,7 +9,8 @@ use std::{
 use application::{LeagueClientReadError, LeagueClientReader};
 use domain::{
     CurrentSummonerProfile, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
-    LeagueSelfData, MatchResult, RankedQueue, RankedQueueSummary, RecentMatchSummary,
+    LeagueDataSection, LeagueDataWarning, LeagueSelfData, MatchResult, RankedQueue,
+    RankedQueueSummary, RecentMatchSummary,
 };
 use reqwest::{blocking::Client, StatusCode};
 use serde::Deserialize;
@@ -62,30 +64,7 @@ impl LocalLeagueClient {
             Err(error) => return empty_self_data(status_from_request_error(error)),
         };
 
-        let champion_names = session
-            .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
-            .map(champion_name_map)
-            .unwrap_or_default();
-        let ranked_queues = session
-            .get_json::<LcuRankedStats>("/lol-ranked/v1/current-ranked-stats")
-            .map(map_ranked_queues)
-            .unwrap_or_default();
-        let recent_matches = session
-            .get_json::<LcuMatchHistoryResponse>(
-                format!(
-                    "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={match_limit}"
-                )
-                .as_str(),
-            )
-            .map(|history| map_recent_matches(history, &summoner, &champion_names))
-            .unwrap_or_default();
-
-        LeagueSelfData {
-            status: connected_status(),
-            summoner: Some(summoner.profile()),
-            ranked_queues,
-            recent_matches,
-        }
+        build_self_data(session, summoner, match_limit)
     }
 
     fn open_session(&self) -> SessionOpenResult {
@@ -207,10 +186,20 @@ enum LockfileDiscovery {
     LockfileMissing,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct LockfileCredentials {
     port: u16,
     password: String,
+}
+
+impl fmt::Debug for LockfileCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LockfileCredentials")
+            .field("port", &self.port)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 fn parse_lockfile(contents: &str) -> Result<LockfileCredentials, LcuAdapterError> {
@@ -292,6 +281,14 @@ impl LcuSession {
             return Err(LcuRequestError::Unauthorized);
         }
 
+        if status == StatusCode::NOT_FOUND {
+            return Err(LcuRequestError::NotLoggedIn);
+        }
+
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            return Err(LcuRequestError::Patching);
+        }
+
         if !status.is_success() {
             return Err(LcuRequestError::Unavailable);
         }
@@ -303,6 +300,8 @@ impl LcuSession {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LcuRequestError {
     Unauthorized,
+    NotLoggedIn,
+    Patching,
     Unavailable,
     Unexpected,
 }
@@ -352,6 +351,18 @@ fn status_from_request_error(error: LcuRequestError) -> LeagueClientStatus {
             LeagueClientPhase::Unauthorized,
             "League Client rejected local authentication",
         ),
+        LcuRequestError::NotLoggedIn => unavailable_status(
+            true,
+            true,
+            LeagueClientPhase::NotLoggedIn,
+            "League Client is not logged in yet",
+        ),
+        LcuRequestError::Patching => unavailable_status(
+            true,
+            true,
+            LeagueClientPhase::Patching,
+            "League Client local API is not ready",
+        ),
         LcuRequestError::Unavailable => unavailable_status(
             true,
             true,
@@ -373,6 +384,99 @@ fn empty_self_data(status: LeagueClientStatus) -> LeagueSelfData {
         summoner: None,
         ranked_queues: Vec::new(),
         recent_matches: Vec::new(),
+        data_warnings: Vec::new(),
+    }
+}
+
+fn build_self_data(session: LcuSession, summoner: LcuSummoner, match_limit: i64) -> LeagueSelfData {
+    let champion_names_result =
+        session.get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json");
+    let ranked_result = session.get_json::<LcuRankedStats>("/lol-ranked/v1/current-ranked-stats");
+    let matches_path = format!(
+        "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={match_limit}"
+    );
+    let matches_result = session.get_json::<LcuMatchHistoryResponse>(matches_path.as_str());
+
+    compose_self_data(summoner, champion_names_result, ranked_result, matches_result)
+}
+
+fn compose_self_data(
+    summoner: LcuSummoner,
+    champion_names_result: Result<Vec<LcuChampionSummary>, LcuRequestError>,
+    ranked_result: Result<LcuRankedStats, LcuRequestError>,
+    matches_result: Result<LcuMatchHistoryResponse, LcuRequestError>,
+) -> LeagueSelfData {
+    let mut warnings = Vec::new();
+    let champion_names = match champion_names_result {
+        Ok(champions) => champion_name_map(champions),
+        Err(error) => {
+            warnings.push(data_warning(
+                LeagueDataSection::Champions,
+                section_error_message("Champion names", error),
+            ));
+            HashMap::new()
+        }
+    };
+    let ranked_queues = match ranked_result {
+        Ok(stats) => map_ranked_queues(stats),
+        Err(error) => {
+            warnings.push(data_warning(
+                LeagueDataSection::Ranked,
+                section_error_message("Ranked data", error),
+            ));
+            Vec::new()
+        }
+    };
+    let recent_matches = match matches_result {
+        Ok(history) => map_recent_matches(history, &summoner, &champion_names),
+        Err(error) => {
+            warnings.push(data_warning(
+                LeagueDataSection::Matches,
+                section_error_message("Recent matches", error),
+            ));
+            Vec::new()
+        }
+    };
+
+    let status = if warnings.is_empty() {
+        connected_status()
+    } else {
+        partial_data_status()
+    };
+
+    LeagueSelfData {
+        status,
+        summoner: Some(summoner.profile()),
+        ranked_queues,
+        recent_matches,
+        data_warnings: warnings,
+    }
+}
+
+fn partial_data_status() -> LeagueClientStatus {
+    LeagueClientStatus {
+        is_running: true,
+        lockfile_found: true,
+        connection: LeagueClientConnection::Connected,
+        phase: LeagueClientPhase::PartialData,
+        message: Some("League Client connected with partial data".to_string()),
+    }
+}
+
+fn data_warning(section: LeagueDataSection, message: impl Into<String>) -> LeagueDataWarning {
+    LeagueDataWarning {
+        section,
+        message: message.into(),
+    }
+}
+
+fn section_error_message(section_name: &str, error: LcuRequestError) -> String {
+    match error {
+        LcuRequestError::Unauthorized => format!("{section_name} could not be read"),
+        LcuRequestError::NotLoggedIn => format!("{section_name} is unavailable before login"),
+        LcuRequestError::Patching => format!("{section_name} is unavailable while the client is preparing"),
+        LcuRequestError::Unavailable => format!("{section_name} is temporarily unavailable"),
+        LcuRequestError::Unexpected => format!("{section_name} returned an unexpected response"),
     }
 }
 
@@ -690,6 +794,16 @@ mod tests {
     }
 
     #[test]
+    fn lockfile_credentials_debug_redacts_password() {
+        let credentials =
+            parse_lockfile("LeagueClient:1234:2999:secret-token:https").expect("lockfile parses");
+        let message = format!("{credentials:?}");
+
+        assert!(message.contains("<redacted>"));
+        assert!(!message.contains("secret-token"));
+    }
+
+    #[test]
     fn rejects_malformed_lockfile_without_exposing_password() {
         let error = parse_lockfile("LeagueClient:1234:not-a-port:secret-token:https")
             .expect_err("lockfile is rejected");
@@ -703,6 +817,19 @@ mod tests {
         let result = parse_lockfile("LeagueClient:1234:2999:secret-token:http");
 
         assert!(matches!(result, Err(LcuAdapterError::InvalidLockfile)));
+    }
+
+    #[test]
+    fn request_errors_map_to_specific_safe_statuses() {
+        let unauthorized = status_from_request_error(LcuRequestError::Unauthorized);
+        let not_logged_in = status_from_request_error(LcuRequestError::NotLoggedIn);
+        let patching = status_from_request_error(LcuRequestError::Patching);
+
+        assert_eq!(unauthorized.phase, LeagueClientPhase::Unauthorized);
+        assert_eq!(not_logged_in.phase, LeagueClientPhase::NotLoggedIn);
+        assert_eq!(patching.phase, LeagueClientPhase::Patching);
+        assert!(unauthorized.message.unwrap().contains("authentication"));
+        assert!(!format!("{not_logged_in:?}").contains("secret-token"));
     }
 
     #[test]
@@ -737,16 +864,7 @@ mod tests {
 
     #[test]
     fn maps_recent_match_for_current_summoner_only() {
-        let summoner = LcuSummoner {
-            display_name: Some("Player".to_string()),
-            game_name: None,
-            tag_line: None,
-            summoner_level: Some(100),
-            profile_icon_id: Some(1),
-            account_id: Some(55),
-            summoner_id: Some(99),
-            puuid: Some("self-puuid".to_string()),
-        };
+        let summoner = sample_summoner();
         let mut champion_names = HashMap::new();
         champion_names.insert(103, "Ahri".to_string());
 
@@ -806,6 +924,42 @@ mod tests {
     }
 
     #[test]
+    fn optional_ranked_failure_returns_partial_snapshot() {
+        let data = compose_self_data(
+            sample_summoner(),
+            Ok(vec![LcuChampionSummary {
+                id: 103,
+                name: "Ahri".to_string(),
+            }]),
+            Err(LcuRequestError::Unavailable),
+            Ok(empty_match_history()),
+        );
+
+        assert_eq!(data.status.phase, LeagueClientPhase::PartialData);
+        assert_eq!(data.summoner.unwrap().display_name, "Player");
+        assert_eq!(data.data_warnings.len(), 1);
+        assert_eq!(data.data_warnings[0].section, LeagueDataSection::Ranked);
+    }
+
+    #[test]
+    fn malformed_optional_payload_does_not_drop_summoner() {
+        let data = compose_self_data(
+            sample_summoner(),
+            Err(LcuRequestError::Unexpected),
+            Ok(LcuRankedStats { queues: Vec::new() }),
+            Err(LcuRequestError::Unexpected),
+        );
+
+        assert_eq!(data.status.phase, LeagueClientPhase::PartialData);
+        assert!(data.summoner.is_some());
+        assert_eq!(data.data_warnings.len(), 2);
+        assert!(data
+            .data_warnings
+            .iter()
+            .all(|warning| !warning.message.contains("secret-token")));
+    }
+
+    #[test]
     fn missing_override_path_reports_lockfile_missing() {
         let client = LocalLeagueClient::with_lockfile_path(Path::new("missing-lockfile-for-test"));
 
@@ -813,5 +967,24 @@ mod tests {
             client.discover_lockfile_path(),
             LockfileDiscovery::LockfileMissing
         ));
+    }
+
+    fn sample_summoner() -> LcuSummoner {
+        LcuSummoner {
+            display_name: Some("Player".to_string()),
+            game_name: None,
+            tag_line: None,
+            summoner_level: Some(100),
+            profile_icon_id: Some(1),
+            account_id: Some(55),
+            summoner_id: Some(99),
+            puuid: Some("self-puuid".to_string()),
+        }
+    }
+
+    fn empty_match_history() -> LcuMatchHistoryResponse {
+        LcuMatchHistoryResponse {
+            games: Some(LcuGames { games: Vec::new() }),
+        }
     }
 }

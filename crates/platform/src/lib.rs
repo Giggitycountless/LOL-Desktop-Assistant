@@ -413,6 +413,7 @@ mod tests {
                 kda_tag: KdaTag::High,
                 recent_champions: vec!["Ahri".to_string()],
             },
+            data_warnings: Vec::new(),
             refreshed_at: "123".to_string(),
         })
         .expect("league snapshot serializes");

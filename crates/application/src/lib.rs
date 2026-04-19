@@ -318,6 +318,7 @@ pub fn get_league_self_snapshot(
         summoner: data.summoner,
         ranked_queues: data.ranked_queues,
         recent_matches: data.recent_matches,
+        data_warnings: data.data_warnings,
         refreshed_at: unix_timestamp_seconds(),
     })
 }
@@ -828,6 +829,7 @@ mod tests {
                     summoner: None,
                     ranked_queues: Vec::new(),
                     recent_matches,
+                    data_warnings: Vec::new(),
                 },
                 last_match_limit: RefCell::new(None),
             }
@@ -853,6 +855,7 @@ mod tests {
                     .take(match_limit as usize)
                     .cloned()
                     .collect(),
+                data_warnings: self.data.data_warnings.clone(),
             })
         }
     }

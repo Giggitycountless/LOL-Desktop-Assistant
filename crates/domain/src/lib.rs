@@ -197,6 +197,9 @@ pub enum LeagueClientPhase {
     Connecting,
     Connected,
     Unauthorized,
+    NotLoggedIn,
+    Patching,
+    PartialData,
     Unavailable,
 }
 
@@ -208,6 +211,7 @@ pub struct LeagueSelfSnapshot {
     pub ranked_queues: Vec<RankedQueueSummary>,
     pub recent_matches: Vec<RecentMatchSummary>,
     pub recent_performance: RecentPerformanceSummary,
+    pub data_warnings: Vec<LeagueDataWarning>,
     pub refreshed_at: String,
 }
 
@@ -218,6 +222,22 @@ pub struct LeagueSelfData {
     pub summoner: Option<CurrentSummonerProfile>,
     pub ranked_queues: Vec<RankedQueueSummary>,
     pub recent_matches: Vec<RecentMatchSummary>,
+    pub data_warnings: Vec<LeagueDataWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueDataWarning {
+    pub section: LeagueDataSection,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LeagueDataSection {
+    Champions,
+    Ranked,
+    Matches,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
