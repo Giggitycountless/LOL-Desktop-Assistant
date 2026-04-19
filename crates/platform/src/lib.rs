@@ -703,6 +703,10 @@ mod tests {
         assert_eq!(value["gameId"], 10);
         assert_eq!(value["teams"][0]["participants"][0]["participantId"], 1);
         assert_eq!(
+            value["teams"][0]["participants"][0]["performanceScore"],
+            8.8
+        );
+        assert_eq!(
             value["teams"][0]["participants"][0]["noteSummary"]["tags"],
             json!(["carry"])
         );
@@ -805,6 +809,7 @@ mod tests {
                     deaths: 1,
                     assists: 8,
                     kda: Some(15.0),
+                    performance_score: 8.8,
                     cs: 210,
                     gold_earned: 12_000,
                     damage_to_champions: 22_000,

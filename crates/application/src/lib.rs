@@ -31,6 +31,13 @@ const MAX_LEAGUE_ASSET_ID: i64 = 1_000_000;
 const MAX_PLAYER_NOTE_LEN: usize = 1_000;
 const MAX_PLAYER_TAGS: usize = 8;
 const MAX_PLAYER_TAG_LEN: usize = 24;
+const SCORE_KDA_WEIGHT: f64 = 0.22;
+const SCORE_KILL_PARTICIPATION_WEIGHT: f64 = 0.18;
+const SCORE_DAMAGE_WEIGHT: f64 = 0.20;
+const SCORE_GOLD_WEIGHT: f64 = 0.12;
+const SCORE_CS_WEIGHT: f64 = 0.10;
+const SCORE_VISION_WEIGHT: f64 = 0.10;
+const SCORE_RESULT_WEIGHT: f64 = 0.08;
 
 pub trait AppStore {
     fn schema_version(&self) -> Result<i64, String>;
@@ -700,6 +707,7 @@ fn post_match_detail_from_completed_match(
             deaths: participant.deaths,
             assists: participant.assists,
             kda: participant.kda,
+            performance_score: 0.0,
             cs: participant.cs,
             gold_earned: participant.gold_earned,
             damage_to_champions: participant.damage_to_champions,
@@ -710,6 +718,8 @@ fn post_match_detail_from_completed_match(
             note_summary,
         });
     }
+
+    score_post_match_participants(&mut participants, completed_match.game_duration_seconds);
 
     let teams = post_match_teams(&participants);
     let comparison = post_match_comparison(&participants);
@@ -764,6 +774,99 @@ fn post_match_teams(participants: &[PostMatchParticipant]) -> Vec<PostMatchTeam>
             }
         })
         .collect()
+}
+
+fn score_post_match_participants(
+    participants: &mut [PostMatchParticipant],
+    game_duration_seconds: Option<i64>,
+) {
+    for index in 0..participants.len() {
+        let team_id = participants[index].team_id;
+        let team_kills: i64 = participants
+            .iter()
+            .filter(|participant| participant.team_id == team_id)
+            .map(|participant| participant.kills)
+            .sum();
+        let team_damage: i64 = participants
+            .iter()
+            .filter(|participant| participant.team_id == team_id)
+            .map(|participant| participant.damage_to_champions)
+            .sum();
+        let team_gold: i64 = participants
+            .iter()
+            .filter(|participant| participant.team_id == team_id)
+            .map(|participant| participant.gold_earned)
+            .sum();
+
+        participants[index].performance_score = participant_performance_score(
+            &participants[index],
+            team_kills,
+            team_damage,
+            team_gold,
+            game_duration_seconds,
+        );
+    }
+}
+
+fn participant_performance_score(
+    participant: &PostMatchParticipant,
+    team_kills: i64,
+    team_damage: i64,
+    team_gold: i64,
+    game_duration_seconds: Option<i64>,
+) -> f64 {
+    let kda = participant.kda.unwrap_or_else(|| {
+        calculate_kda(participant.kills, participant.deaths, participant.assists)
+    });
+    let duration_minutes = game_duration_seconds
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| seconds as f64 / 60.0);
+    let kill_participation = if team_kills > 0 {
+        ((participant.kills + participant.assists) as f64 / team_kills as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let damage_share = if team_damage > 0 {
+        capped_ratio(
+            participant.damage_to_champions as f64 / team_damage as f64,
+            0.35,
+        )
+    } else {
+        0.0
+    };
+    let gold_share = if team_gold > 0 {
+        capped_ratio(participant.gold_earned as f64 / team_gold as f64, 0.28)
+    } else {
+        0.0
+    };
+    let cs_pace = duration_minutes
+        .map(|minutes| capped_ratio(participant.cs as f64 / minutes, 10.0))
+        .unwrap_or(0.0);
+    let vision_pace = duration_minutes
+        .map(|minutes| capped_ratio(participant.vision_score as f64 / minutes, 2.0))
+        .unwrap_or(0.0);
+    let result_value = match participant.result {
+        MatchResult::Win => 1.0,
+        MatchResult::Loss => 0.35,
+        MatchResult::Unknown => 0.5,
+    };
+    let weighted_score = capped_ratio(kda, 12.0) * SCORE_KDA_WEIGHT
+        + kill_participation * SCORE_KILL_PARTICIPATION_WEIGHT
+        + damage_share * SCORE_DAMAGE_WEIGHT
+        + gold_share * SCORE_GOLD_WEIGHT
+        + cs_pace * SCORE_CS_WEIGHT
+        + vision_pace * SCORE_VISION_WEIGHT
+        + result_value * SCORE_RESULT_WEIGHT;
+
+    round_to_tenth((1.0 + weighted_score * 9.0).clamp(0.0, 10.0))
+}
+
+fn capped_ratio(value: f64, cap: f64) -> f64 {
+    if cap <= 0.0 {
+        0.0
+    } else {
+        (value / cap).clamp(0.0, 1.0)
+    }
 }
 
 fn team_totals(participants: &[PostMatchParticipant]) -> PostMatchTeamTotals {
@@ -1510,11 +1613,27 @@ mod tests {
         assert_eq!(detail.teams[0].participants.len(), 1);
         assert_eq!(detail.teams[0].totals.kills, 7);
         assert_eq!(detail.comparison.most_damage.unwrap().participant_id, 2);
+        assert!(detail.teams[0].participants[0].performance_score > 8.0);
         assert!(detail.teams[0].participants[0].note_summary.has_note);
         assert_eq!(
             detail.teams[0].participants[0].note_summary.tags,
             vec!["carry"]
         );
+    }
+
+    #[test]
+    fn post_match_detail_scores_participants_from_available_stats() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::with_completed_match(sample_completed_match());
+
+        let detail = get_post_match_detail(&store, &reader, PostMatchDetailInput { game_id: 10 })
+            .expect("post-match detail reads");
+        let first_score = detail.teams[0].participants[0].performance_score;
+        let second_score = detail.teams[1].participants[0].performance_score;
+
+        assert!((0.0..=10.0).contains(&first_score));
+        assert!((0.0..=10.0).contains(&second_score));
+        assert!(first_score > second_score);
     }
 
     #[test]

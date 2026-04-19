@@ -206,6 +206,7 @@ export type PostMatchParticipant = {
   deaths: number;
   assists: number;
   kda: number | null;
+  performanceScore: number;
   cs: number;
   goldEarned: number;
   damageToChampions: number;

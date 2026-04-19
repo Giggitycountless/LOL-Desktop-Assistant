@@ -398,6 +398,7 @@ pub struct PostMatchParticipant {
     pub deaths: i64,
     pub assists: i64,
     pub kda: Option<f64>,
+    pub performance_score: f64,
     pub cs: i64,
     pub gold_earned: i64,
     pub damage_to_champions: i64,
