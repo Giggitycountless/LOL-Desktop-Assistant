@@ -784,37 +784,47 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    const TEST_LOCKFILE_VALUE: &str = "not-a-real-test-value";
+
     #[test]
     fn parses_valid_lockfile() {
-        let credentials =
-            parse_lockfile("LeagueClient:1234:2999:secret-token:https").expect("lockfile parses");
+        let credentials = parse_lockfile(
+            format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:https").as_str(),
+        )
+        .expect("lockfile parses");
 
         assert_eq!(credentials.port, 2999);
-        assert_eq!(credentials.password, "secret-token");
+        assert_eq!(credentials.password, TEST_LOCKFILE_VALUE);
     }
 
     #[test]
     fn lockfile_credentials_debug_redacts_password() {
-        let credentials =
-            parse_lockfile("LeagueClient:1234:2999:secret-token:https").expect("lockfile parses");
+        let credentials = parse_lockfile(
+            format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:https").as_str(),
+        )
+        .expect("lockfile parses");
         let message = format!("{credentials:?}");
 
         assert!(message.contains("<redacted>"));
-        assert!(!message.contains("secret-token"));
+        assert!(!message.contains(TEST_LOCKFILE_VALUE));
     }
 
     #[test]
     fn rejects_malformed_lockfile_without_exposing_password() {
-        let error = parse_lockfile("LeagueClient:1234:not-a-port:secret-token:https")
+        let error = parse_lockfile(
+            format!("LeagueClient:1234:not-a-port:{TEST_LOCKFILE_VALUE}:https").as_str(),
+        )
             .expect_err("lockfile is rejected");
         let message = format!("{error:?}");
 
-        assert!(!message.contains("secret-token"));
+        assert!(!message.contains(TEST_LOCKFILE_VALUE));
     }
 
     #[test]
     fn rejects_non_https_lockfile() {
-        let result = parse_lockfile("LeagueClient:1234:2999:secret-token:http");
+        let result = parse_lockfile(
+            format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:http").as_str(),
+        );
 
         assert!(matches!(result, Err(LcuAdapterError::InvalidLockfile)));
     }
@@ -829,7 +839,7 @@ mod tests {
         assert_eq!(not_logged_in.phase, LeagueClientPhase::NotLoggedIn);
         assert_eq!(patching.phase, LeagueClientPhase::Patching);
         assert!(unauthorized.message.unwrap().contains("authentication"));
-        assert!(!format!("{not_logged_in:?}").contains("secret-token"));
+        assert!(!format!("{not_logged_in:?}").contains(TEST_LOCKFILE_VALUE));
     }
 
     #[test]
@@ -956,7 +966,7 @@ mod tests {
         assert!(data
             .data_warnings
             .iter()
-            .all(|warning| !warning.message.contains("secret-token")));
+            .all(|warning| !warning.message.contains(TEST_LOCKFILE_VALUE)));
     }
 
     #[test]
