@@ -3,10 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import { Activity } from "./pages/Activity";
 import { Dashboard } from "./pages/Dashboard";
 import { Matches } from "./pages/Matches";
+import { ParticipantProfileWindow } from "./pages/ParticipantProfileWindow";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { AppStateProvider, useAppState } from "./state/AppStateProvider";
 import type { StartupPage } from "./backend/types";
+import { selectionFromParticipantProfileHash } from "./windows/participantProfileWindow";
 
 type Page = StartupPage | "profile" | "matches";
 
@@ -19,9 +21,11 @@ const pages: Array<{ id: Page; label: string; icon: IconName }> = [
 ];
 
 export function App() {
+  const participantProfileSelection = selectionFromParticipantProfileHash(window.location.hash);
+
   return (
     <AppStateProvider>
-      <AppShell />
+      {participantProfileSelection ? <ParticipantProfileWindow initialSelection={participantProfileSelection} /> : <AppShell />}
     </AppStateProvider>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { useAppState } from "../state/AppStateProvider";
 import type { MatchResult, RecentMatchSummary } from "../backend/types";
+import { emitParticipantProfileChanged } from "../windows/participantProfileWindow";
 
 export type SelectedParticipant = {
   gameId: number;
@@ -77,33 +78,51 @@ export function ParticipantProfilePanel({
     );
   }
 
+  const activeSelection = selection;
+  const activeProfile = profile;
   const tags = tagsDraft
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean);
-  const profileImageUrl = profile.profileIconId ? leagueImages.profileIcons[profile.profileIconId] : undefined;
+  const profileImageUrl = activeProfile.profileIconId ? leagueImages.profileIcons[activeProfile.profileIconId] : undefined;
+
+  async function handleSaveNote() {
+    const saved = await savePlayerNote({ gameId: activeProfile.gameId, participantId: activeProfile.participantId, note: noteDraft, tags });
+
+    if (saved) {
+      await emitParticipantProfileChanged(activeSelection);
+    }
+  }
+
+  async function handleClearNote() {
+    const cleared = await clearPlayerNote(activeProfile.gameId, activeProfile.participantId);
+
+    if (cleared) {
+      await emitParticipantProfileChanged(activeSelection);
+    }
+  }
 
   return (
     <aside className={containerClass}>
       <div className="flex items-center gap-3">
-        <ProfileImage displayName={profile.displayName} imageUrl={profileImageUrl} />
+        <ProfileImage displayName={activeProfile.displayName} imageUrl={profileImageUrl} />
         <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-zinc-950">{profile.displayName}</h2>
+          <h2 className="truncate text-base font-semibold text-zinc-950">{activeProfile.displayName}</h2>
           <p className="mt-1 text-xs text-zinc-500">Completed match participant</p>
         </div>
       </div>
 
       <div className="mt-5 grid gap-3">
-        <Detail label="Recent KDA" value={formatAverageKda(profile.recentStats?.averageKda)} />
-        <Detail label="Recent matches" value={profile.recentStats ? String(profile.recentStats.matchCount) : "Unavailable"} />
-        <Detail label="Recent champions" value={profile.recentStats?.recentChampions.join(", ") || "Unavailable"} />
+        <Detail label="Recent KDA" value={formatAverageKda(activeProfile.recentStats?.averageKda)} />
+        <Detail label="Recent matches" value={activeProfile.recentStats ? String(activeProfile.recentStats.matchCount) : "Unavailable"} />
+        <Detail label="Recent champions" value={activeProfile.recentStats?.recentChampions.join(", ") || "Unavailable"} />
       </div>
 
-      <RecentMatchesList matches={profile.recentStats?.recentMatches ?? []} />
+      <RecentMatchesList matches={activeProfile.recentStats?.recentMatches ?? []} />
 
-      {profile.warnings.length > 0 && (
+      {activeProfile.warnings.length > 0 && (
         <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {profile.warnings.map((warning) => (
+          {activeProfile.warnings.map((warning) => (
             <p key={`${warning.section}-${warning.message}`}>{warning.message}</p>
           ))}
         </div>
@@ -131,14 +150,14 @@ export function ParticipantProfilePanel({
         <div className="flex flex-wrap gap-2">
           <button
             className="h-10 rounded-md bg-rose-700 px-3 text-sm font-semibold text-white transition hover:bg-rose-800"
-            onClick={() => void savePlayerNote({ gameId: profile.gameId, participantId: profile.participantId, note: noteDraft, tags })}
+            onClick={() => void handleSaveNote()}
             type="button"
           >
             Save note
           </button>
           <button
             className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
-            onClick={() => void clearPlayerNote(profile.gameId, profile.participantId)}
+            onClick={() => void handleClearNote()}
             type="button"
           >
             Clear

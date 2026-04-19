@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { ParticipantProfilePanel, type SelectedParticipant } from "../components/ParticipantProfilePanel";
 import { leagueGameAssetKey, useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
+import {
+  isSelectedParticipant,
+  openParticipantProfileWindow,
+  PARTICIPANT_PROFILE_CHANGED_EVENT,
+  sameParticipant,
+} from "../windows/participantProfileWindow";
 import type {
   LeagueGameAssetKind,
   MatchResult,
@@ -20,6 +27,7 @@ export function Matches() {
     isLeagueClientLoading,
     loadLeagueGameAsset,
     loadLeagueChampionIcon,
+    loadParticipantProfile,
     loadPostMatchDetail,
     refreshLeagueClient,
   } = useAppState();
@@ -57,6 +65,30 @@ export function Matches() {
       }
     }
   }, [loadLeagueChampionIcon, loadLeagueGameAsset, postMatchDetails]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    void listen<unknown>(PARTICIPANT_PROFILE_CHANGED_EVENT, (event) => {
+      if (!isSelectedParticipant(event.payload) || !sameParticipant(selectedParticipant, event.payload)) {
+        return;
+      }
+
+      void loadParticipantProfile({ ...event.payload, recentLimit: 6 });
+      void loadPostMatchDetail(event.payload.gameId);
+    }).then((handler) => {
+      unlisten = handler;
+    });
+
+    return () => {
+      unlisten?.();
+    };
+  }, [loadParticipantProfile, loadPostMatchDetail, selectedParticipant]);
+
+  function selectParticipant(selection: SelectedParticipant) {
+    setSelectedParticipant(selection);
+    void openParticipantProfileWindow(selection);
+  }
 
   return (
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
@@ -102,7 +134,7 @@ export function Matches() {
                     isExpanded={expandedGameId === match.gameId}
                     key={match.gameId}
                     match={match}
-                    onParticipantSelect={(participantId) => setSelectedParticipant({ gameId: match.gameId, participantId })}
+                    onParticipantSelect={(participantId) => selectParticipant({ gameId: match.gameId, participantId })}
                     onToggle={() => setExpandedGameId(expandedGameId === match.gameId ? null : match.gameId)}
                     gameAssets={leagueImages.gameAssets}
                     participantImages={leagueImages.championIcons}
