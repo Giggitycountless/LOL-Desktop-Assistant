@@ -13,7 +13,7 @@ export type LeagueClientPhase =
   | "patching"
   | "partialData"
   | "unavailable";
-export type LeagueDataSection = "champions" | "ranked" | "matches";
+export type LeagueDataSection = "champions" | "ranked" | "matches" | "participants" | "recentStats";
 export type RankedQueue = "soloDuo" | "flex" | "other";
 export type MatchResult = "win" | "loss" | "unknown";
 export type KdaTag = "high" | "standard" | "unavailable";
@@ -145,6 +145,122 @@ export type LeagueSelfSnapshotInput = {
 export type LeagueImageAsset = {
   mimeType: string;
   bytes: number[];
+};
+
+export type PlayerNoteSummary = {
+  hasNote: boolean;
+  tags: string[];
+};
+
+export type PlayerNoteView = {
+  gameId: number;
+  participantId: number;
+  note: string | null;
+  tags: string[];
+  updatedAt: string | null;
+};
+
+export type ClearPlayerNoteResult = {
+  cleared: boolean;
+};
+
+export type PostMatchDetail = {
+  gameId: number;
+  queueName: string | null;
+  playedAt: string | null;
+  gameDurationSeconds: number | null;
+  result: MatchResult;
+  teams: PostMatchTeam[];
+  comparison: PostMatchComparison;
+  warnings: LeagueDataWarning[];
+};
+
+export type PostMatchTeam = {
+  teamId: number;
+  result: MatchResult;
+  participants: PostMatchParticipant[];
+  totals: PostMatchTeamTotals;
+};
+
+export type PostMatchParticipant = {
+  participantId: number;
+  teamId: number;
+  displayName: string;
+  championId: number | null;
+  championName: string;
+  role: string | null;
+  lane: string | null;
+  profileIconId: number | null;
+  result: MatchResult;
+  kills: number;
+  deaths: number;
+  assists: number;
+  kda: number | null;
+  cs: number;
+  goldEarned: number;
+  damageToChampions: number;
+  visionScore: number;
+  items: number[];
+  runes: number[];
+  spells: number[];
+  noteSummary: PlayerNoteSummary;
+};
+
+export type PostMatchTeamTotals = {
+  kills: number;
+  deaths: number;
+  assists: number;
+  goldEarned: number;
+  damageToChampions: number;
+  visionScore: number;
+};
+
+export type PostMatchComparison = {
+  highestKda: ParticipantMetricLeader | null;
+  mostCs: ParticipantMetricLeader | null;
+  mostGold: ParticipantMetricLeader | null;
+  mostDamage: ParticipantMetricLeader | null;
+  highestVision: ParticipantMetricLeader | null;
+};
+
+export type ParticipantMetricLeader = {
+  participantId: number;
+  displayName: string;
+  value: number;
+};
+
+export type ParticipantRecentStats = {
+  matchCount: number;
+  averageKda: number | null;
+  recentChampions: string[];
+};
+
+export type ParticipantPublicProfile = {
+  gameId: number;
+  participantId: number;
+  displayName: string;
+  profileIconId: number | null;
+  recentStats: ParticipantRecentStats | null;
+  note: PlayerNoteView | null;
+  warnings: LeagueDataWarning[];
+};
+
+export type ParticipantPublicProfileInput = {
+  gameId: number;
+  participantId: number;
+  recentLimit?: number;
+};
+
+export type SavePlayerNoteInput = {
+  gameId: number;
+  participantId: number;
+  note: string | null;
+  tags: string[];
+};
+
+export type ClearPlayerNoteInput = {
+  gameId: number;
+  participantId: number;
 };
 
 export type LocalDataExport = {

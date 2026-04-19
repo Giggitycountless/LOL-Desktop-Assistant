@@ -1,5 +1,17 @@
 import { callBackend } from "./commands";
-import type { LeagueClientStatus, LeagueImageAsset, LeagueSelfSnapshot, LeagueSelfSnapshotInput } from "./types";
+import type {
+  ClearPlayerNoteInput,
+  ClearPlayerNoteResult,
+  LeagueClientStatus,
+  LeagueImageAsset,
+  LeagueSelfSnapshot,
+  LeagueSelfSnapshotInput,
+  ParticipantPublicProfile,
+  ParticipantPublicProfileInput,
+  PlayerNoteView,
+  PostMatchDetail,
+  SavePlayerNoteInput,
+} from "./types";
 
 export function fetchLeagueClientStatus(): Promise<LeagueClientStatus> {
   return callBackend<LeagueClientStatus>("get_league_client_status");
@@ -20,5 +32,29 @@ export function fetchLeagueProfileIcon(profileIconId: number): Promise<LeagueIma
 export function fetchLeagueChampionIcon(championId: number): Promise<LeagueImageAsset> {
   return callBackend<LeagueImageAsset>("get_league_champion_icon", {
     input: { championId },
+  });
+}
+
+export function fetchPostMatchDetail(gameId: number): Promise<PostMatchDetail> {
+  return callBackend<PostMatchDetail>("get_post_match_detail", {
+    input: { gameId },
+  });
+}
+
+export function fetchPostMatchParticipantProfile(input: ParticipantPublicProfileInput): Promise<ParticipantPublicProfile> {
+  return callBackend<ParticipantPublicProfile>("get_post_match_participant_profile", {
+    input,
+  });
+}
+
+export function savePlayerNote(input: SavePlayerNoteInput): Promise<PlayerNoteView> {
+  return callBackend<PlayerNoteView>("save_player_note", {
+    input,
+  });
+}
+
+export function clearPlayerNote(input: ClearPlayerNoteInput): Promise<ClearPlayerNoteResult> {
+  return callBackend<ClearPlayerNoteResult>("clear_player_note", {
+    input,
   });
 }

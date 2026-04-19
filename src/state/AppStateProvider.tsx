@@ -3,7 +3,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { clearActivityEntries, createActivityNote, listActivityEntries } from "../backend/activity";
 import { isCommandError } from "../backend/commands";
 import { exportLocalData, importLocalData } from "../backend/dataTools";
-import { fetchLeagueChampionIcon, fetchLeagueProfileIcon, fetchLeagueSelfSnapshot } from "../backend/leagueClient";
+import {
+  clearPlayerNote as clearPlayerNoteCommand,
+  fetchLeagueChampionIcon,
+  fetchLeagueProfileIcon,
+  fetchLeagueSelfSnapshot,
+  fetchPostMatchDetail,
+  fetchPostMatchParticipantProfile,
+  savePlayerNote as savePlayerNoteCommand,
+} from "../backend/leagueClient";
 import { saveSettings } from "../backend/settings";
 import { fetchAppState } from "../backend/system";
 import type {
@@ -15,6 +23,11 @@ import type {
   LeagueImageAsset,
   LeagueSelfSnapshot,
   LeagueSelfSnapshotInput,
+  ParticipantPublicProfile,
+  ParticipantPublicProfileInput,
+  PlayerNoteView,
+  PostMatchDetail,
+  SavePlayerNoteInput,
   SaveSettingsInput,
 } from "../backend/types";
 
@@ -27,6 +40,8 @@ type AppStateContextValue = {
   snapshot: AppSnapshot | null;
   activityEntries: ActivityEntry[];
   leagueSelfSnapshot: LeagueSelfSnapshot | null;
+  postMatchDetails: Record<number, PostMatchDetail>;
+  participantProfiles: Record<string, ParticipantPublicProfile>;
   leagueImages: LeagueImageUrls;
   isLoading: boolean;
   isActivityLoading: boolean;
@@ -43,6 +58,10 @@ type AppStateContextValue = {
   importLocalData: (json: string) => Promise<boolean>;
   loadLeagueProfileIcon: (profileIconId: number | null | undefined) => Promise<boolean>;
   loadLeagueChampionIcon: (championId: number | null | undefined) => Promise<boolean>;
+  loadPostMatchDetail: (gameId: number) => Promise<boolean>;
+  loadParticipantProfile: (input: ParticipantPublicProfileInput) => Promise<boolean>;
+  savePlayerNote: (input: SavePlayerNoteInput) => Promise<PlayerNoteView | null>;
+  clearPlayerNote: (gameId: number, participantId: number) => Promise<boolean>;
 };
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -51,6 +70,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [leagueSelfSnapshot, setLeagueSelfSnapshot] = useState<LeagueSelfSnapshot | null>(null);
+  const [postMatchDetails, setPostMatchDetails] = useState<Record<number, PostMatchDetail>>({});
+  const [participantProfiles, setParticipantProfiles] = useState<Record<string, ParticipantPublicProfile>>({});
   const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {} });
   const pendingImageKeysRef = useRef(new Set<string>());
   const [leagueImages, setLeagueImages] = useState<LeagueImageUrls>(imageUrlsRef.current);
@@ -258,11 +279,61 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const loadPostMatchDetailAction = useCallback(async (gameId: number) => {
+    try {
+      const detail = await fetchPostMatchDetail(gameId);
+      setPostMatchDetails((current) => ({ ...current, [gameId]: detail }));
+      return true;
+    } catch (caught: unknown) {
+      setFeedback({ kind: "error", message: errorMessage(caught) });
+      return false;
+    }
+  }, []);
+
+  const loadParticipantProfileAction = useCallback(async (input: ParticipantPublicProfileInput) => {
+    try {
+      const profile = await fetchPostMatchParticipantProfile(input);
+      setParticipantProfiles((current) => ({ ...current, [participantProfileKey(input.gameId, input.participantId)]: profile }));
+      return true;
+    } catch (caught: unknown) {
+      setFeedback({ kind: "error", message: errorMessage(caught) });
+      return false;
+    }
+  }, []);
+
+  const savePlayerNoteAction = useCallback(async (input: SavePlayerNoteInput) => {
+    try {
+      const note = await savePlayerNoteCommand(input);
+      await loadPostMatchDetailAction(input.gameId);
+      await loadParticipantProfileAction({ gameId: input.gameId, participantId: input.participantId, recentLimit: 6 });
+      setFeedback({ kind: "success", message: "Player note saved" });
+      return note;
+    } catch (caught: unknown) {
+      setFeedback({ kind: "error", message: errorMessage(caught) });
+      return null;
+    }
+  }, [loadParticipantProfileAction, loadPostMatchDetailAction]);
+
+  const clearPlayerNoteAction = useCallback(async (gameId: number, participantId: number) => {
+    try {
+      await clearPlayerNoteCommand({ gameId, participantId });
+      await loadPostMatchDetailAction(gameId);
+      await loadParticipantProfileAction({ gameId, participantId, recentLimit: 6 });
+      setFeedback({ kind: "success", message: "Player note cleared" });
+      return true;
+    } catch (caught: unknown) {
+      setFeedback({ kind: "error", message: errorMessage(caught) });
+      return false;
+    }
+  }, [loadParticipantProfileAction, loadPostMatchDetailAction]);
+
   const value = useMemo<AppStateContextValue>(
     () => ({
       snapshot,
       activityEntries,
       leagueSelfSnapshot,
+      postMatchDetails,
+      participantProfiles,
       leagueImages,
       isLoading,
       isActivityLoading,
@@ -279,10 +350,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       importLocalData: importLocalDataAction,
       loadLeagueProfileIcon: loadLeagueProfileIconAction,
       loadLeagueChampionIcon: loadLeagueChampionIconAction,
+      loadPostMatchDetail: loadPostMatchDetailAction,
+      loadParticipantProfile: loadParticipantProfileAction,
+      savePlayerNote: savePlayerNoteAction,
+      clearPlayerNote: clearPlayerNoteAction,
     }),
     [
       activityEntries,
       clearActivityEntriesAction,
+      clearPlayerNoteAction,
       createActivityNoteAction,
       exportLocalDataAction,
       feedback,
@@ -295,8 +371,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadLeagueChampionIconAction,
       loadActivityEntriesAction,
       loadLeagueProfileIconAction,
+      loadParticipantProfileAction,
+      loadPostMatchDetailAction,
+      participantProfiles,
+      postMatchDetails,
       refresh,
       refreshLeagueClientAction,
+      savePlayerNoteAction,
       saveSettingsAction,
       snapshot,
     ],
@@ -325,4 +406,8 @@ function errorMessage(error: unknown) {
 
 function imageAssetUrl(asset: LeagueImageAsset) {
   return URL.createObjectURL(new Blob([Uint8Array.from(asset.bytes)], { type: asset.mimeType }));
+}
+
+function participantProfileKey(gameId: number, participantId: number) {
+  return `${gameId}:${participantId}`;
 }
