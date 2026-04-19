@@ -1,14 +1,34 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
+import type { ActivityKind } from "../backend/types";
 import { useAppState } from "../state/AppStateProvider";
 
+type ActivityFilter = ActivityKind | "all";
+
 export function Activity() {
-  const { snapshot, isLoading, createActivityNote } = useAppState();
+  const {
+    activityEntries,
+    isActivityLoading,
+    createActivityNote,
+    loadActivityEntries,
+  } = useAppState();
+  const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [limit, setLimit] = useState(100);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const entries = snapshot?.recentActivity ?? [];
+  const query = useMemo(
+    () => ({
+      limit,
+      kind: filter === "all" ? null : filter,
+    }),
+    [filter, limit],
+  );
+
+  useEffect(() => {
+    void loadActivityEntries(query);
+  }, [loadActivityEntries, query]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -23,18 +43,33 @@ export function Activity() {
       if (didSave) {
         setTitle("");
         setBody("");
+        await loadActivityEntries(query);
       }
     } finally {
       setIsSubmitting(false);
     }
   }
 
+  async function handleRefresh() {
+    await loadActivityEntries(query);
+  }
+
   return (
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-        <header>
-          <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Activity</p>
-          <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Local Activity</h1>
+        <header className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Activity</p>
+            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Local Activity</h1>
+          </div>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={isActivityLoading}
+            className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:text-zinc-400"
+          >
+            {isActivityLoading ? "Refreshing" : "Refresh"}
+          </button>
         </header>
 
         <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
@@ -71,20 +106,51 @@ export function Activity() {
           </form>
 
           <section className="rounded-lg border border-zinc-200 bg-white shadow-sm">
-            <div className="grid grid-cols-[1fr_9rem] border-b border-zinc-200 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              <span>Entry</span>
-              <span>Created</span>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-5 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
+                  Kind
+                  <select
+                    value={filter}
+                    onChange={(event) => setFilter(event.target.value as ActivityFilter)}
+                    className="h-9 rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100"
+                  >
+                    <option value="all">All</option>
+                    <option value="note">Notes</option>
+                    <option value="settings">Settings</option>
+                    <option value="system">System</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
+                  Limit
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={limit}
+                    onChange={(event) => setLimit(Number(event.target.value))}
+                    className="h-9 w-24 rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100"
+                  />
+                </label>
+              </div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                {activityEntries.length} shown
+              </p>
             </div>
 
-            {isLoading && <div className="px-5 py-12 text-center text-sm text-zinc-500">Loading activity</div>}
+            {isActivityLoading && <div className="px-5 py-12 text-center text-sm text-zinc-500">Loading activity</div>}
 
-            {!isLoading && entries.length === 0 && (
-              <div className="px-5 py-12 text-center text-sm text-zinc-500">No activity recorded</div>
+            {!isActivityLoading && activityEntries.length === 0 && (
+              <div className="px-5 py-12 text-center">
+                <p className="text-sm font-medium text-zinc-600">No activity entries match this view</p>
+                <p className="mt-1 text-sm text-zinc-500">Create a note or adjust the filter.</p>
+              </div>
             )}
 
-            {!isLoading && entries.length > 0 && (
+            {!isActivityLoading && activityEntries.length > 0 && (
               <div className="divide-y divide-zinc-200">
-                {entries.map((entry) => (
+                {activityEntries.map((entry) => (
                   <article key={entry.id} className="grid grid-cols-[1fr_9rem] gap-4 px-5 py-4">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">

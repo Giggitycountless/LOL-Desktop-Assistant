@@ -23,7 +23,7 @@ export function App() {
 }
 
 function AppShell() {
-  const { snapshot, error } = useAppState();
+  const { snapshot, feedback, clearFeedback, isLoading } = useAppState();
   const [activePage, setActivePage] = useState<Page>("dashboard");
   const didApplyStartupPage = useRef(false);
   const compactMode = snapshot?.settings.compactMode ?? false;
@@ -83,9 +83,24 @@ function AppShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {error && (
-          <div className="border-b border-amber-200 bg-amber-50 px-8 py-3 text-sm font-medium text-amber-800">
-            {error}
+        {feedback && (
+          <div
+            className={[
+              "flex items-center justify-between gap-4 border-b px-8 py-3 text-sm font-medium",
+              feedback.kind === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-amber-200 bg-amber-50 text-amber-800",
+            ].join(" ")}
+          >
+            <span>{feedback.message}</span>
+            <button type="button" className="font-semibold underline-offset-4 hover:underline" onClick={clearFeedback}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {isLoading && !snapshot && (
+          <div className="border-b border-zinc-200 bg-white px-8 py-3 text-sm font-medium text-zinc-600">
+            Loading application state
           </div>
         )}
         {activePage === "dashboard" && <Dashboard />}
