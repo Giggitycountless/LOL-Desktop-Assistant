@@ -102,6 +102,38 @@ fn get_league_champion_icon(
     platform::get_league_champion_icon(state.inner(), input)
 }
 
+#[tauri::command]
+fn get_post_match_detail(
+    state: State<'_, platform::AppState>,
+    input: platform::PostMatchDetailCommand,
+) -> Result<domain::PostMatchDetail, platform::CommandError> {
+    platform::get_post_match_detail(state.inner(), input)
+}
+
+#[tauri::command]
+fn get_post_match_participant_profile(
+    state: State<'_, platform::AppState>,
+    input: platform::ParticipantPublicProfileCommand,
+) -> Result<domain::ParticipantPublicProfile, platform::CommandError> {
+    platform::get_post_match_participant_profile(state.inner(), input)
+}
+
+#[tauri::command]
+fn save_player_note(
+    state: State<'_, platform::AppState>,
+    input: platform::SavePlayerNoteCommand,
+) -> Result<domain::PlayerNoteView, platform::CommandError> {
+    platform::save_player_note(state.inner(), input)
+}
+
+#[tauri::command]
+fn clear_player_note(
+    state: State<'_, platform::AppState>,
+    input: platform::ClearPlayerNoteCommand,
+) -> Result<domain::ClearPlayerNoteResult, platform::CommandError> {
+    platform::clear_player_note(state.inner(), input)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| platform::setup_app(app))
@@ -119,7 +151,11 @@ fn main() {
             get_league_client_status,
             get_league_self_snapshot,
             get_league_profile_icon,
-            get_league_champion_icon
+            get_league_champion_icon,
+            get_post_match_detail,
+            get_post_match_participant_profile,
+            save_player_note,
+            clear_player_note
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LoL Desktop Assistant");

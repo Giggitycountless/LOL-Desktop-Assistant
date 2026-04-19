@@ -268,6 +268,8 @@ pub enum LeagueDataSection {
     Champions,
     Ranked,
     Matches,
+    Participants,
+    RecentStats,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -338,6 +340,103 @@ pub struct RecentChampionSummary {
     pub champion_id: Option<i64>,
     pub champion_name: String,
     pub games: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostMatchDetail {
+    pub game_id: i64,
+    pub queue_name: Option<String>,
+    pub played_at: Option<String>,
+    pub game_duration_seconds: Option<i64>,
+    pub result: MatchResult,
+    pub teams: Vec<PostMatchTeam>,
+    pub comparison: PostMatchComparison,
+    pub warnings: Vec<LeagueDataWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostMatchTeam {
+    pub team_id: i64,
+    pub result: MatchResult,
+    pub participants: Vec<PostMatchParticipant>,
+    pub totals: PostMatchTeamTotals,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostMatchParticipant {
+    pub participant_id: i64,
+    pub team_id: i64,
+    pub display_name: String,
+    pub champion_id: Option<i64>,
+    pub champion_name: String,
+    pub role: Option<String>,
+    pub lane: Option<String>,
+    pub profile_icon_id: Option<i64>,
+    pub result: MatchResult,
+    pub kills: i64,
+    pub deaths: i64,
+    pub assists: i64,
+    pub kda: Option<f64>,
+    pub cs: i64,
+    pub gold_earned: i64,
+    pub damage_to_champions: i64,
+    pub vision_score: i64,
+    pub items: Vec<i64>,
+    pub runes: Vec<i64>,
+    pub spells: Vec<i64>,
+    pub note_summary: PlayerNoteSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostMatchTeamTotals {
+    pub kills: i64,
+    pub deaths: i64,
+    pub assists: i64,
+    pub gold_earned: i64,
+    pub damage_to_champions: i64,
+    pub vision_score: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostMatchComparison {
+    pub highest_kda: Option<ParticipantMetricLeader>,
+    pub most_cs: Option<ParticipantMetricLeader>,
+    pub most_gold: Option<ParticipantMetricLeader>,
+    pub most_damage: Option<ParticipantMetricLeader>,
+    pub highest_vision: Option<ParticipantMetricLeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipantMetricLeader {
+    pub participant_id: i64,
+    pub display_name: String,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipantPublicProfile {
+    pub game_id: i64,
+    pub participant_id: i64,
+    pub display_name: String,
+    pub profile_icon_id: Option<i64>,
+    pub recent_stats: Option<ParticipantRecentStats>,
+    pub note: Option<PlayerNoteView>,
+    pub warnings: Vec<LeagueDataWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipantRecentStats {
+    pub match_count: usize,
+    pub average_kda: Option<f64>,
+    pub recent_champions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

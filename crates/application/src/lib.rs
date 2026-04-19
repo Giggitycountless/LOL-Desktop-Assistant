@@ -7,9 +7,12 @@ use std::{
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
     ClearPlayerNoteResult, HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus,
-    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
-    NewActivityEntry, PlayerNoteSummary, PlayerNoteView, RecentChampionSummary,
-    RecentMatchSummary, RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
+    LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot,
+    LocalActivityEntry, LocalDataExport, MatchResult, NewActivityEntry, ParticipantMetricLeader,
+    ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView,
+    PostMatchComparison, PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
+    RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary, ServiceStatus,
+    SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -20,6 +23,7 @@ const MAX_ACTIVITY_TITLE_LEN: usize = 120;
 const MAX_ACTIVITY_BODY_LEN: usize = 4_000;
 const DEFAULT_MATCH_LIMIT: i64 = 6;
 const MAX_MATCH_LIMIT: i64 = 20;
+const DEFAULT_PUBLIC_RECENT_LIMIT: i64 = 6;
 const PERFORMANCE_MATCH_COUNT: usize = 6;
 const HIGH_KDA_THRESHOLD: f64 = 9.0;
 const MAX_LEAGUE_ASSET_ID: i64 = 1_000_000;
@@ -55,6 +59,12 @@ pub trait LeagueClientReader {
     fn profile_icon(&self, profile_icon_id: i64)
         -> Result<LeagueImageAsset, LeagueClientReadError>;
     fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError>;
+    fn completed_match(&self, game_id: i64) -> Result<LeagueCompletedMatch, LeagueClientReadError>;
+    fn participant_recent_stats(
+        &self,
+        player_puuid: &str,
+        limit: i64,
+    ) -> Result<ParticipantRecentStats, LeagueClientReadError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +124,18 @@ pub struct LeagueChampionIconInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostMatchDetailInput {
+    pub game_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantPublicProfileInput {
+    pub game_id: i64,
+    pub participant_id: i64,
+    pub recent_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavePlayerNoteInput {
     pub game_id: i64,
     pub participant_id: i64,
@@ -142,6 +164,41 @@ pub struct StoredPlayerNoteInput {
     pub last_display_name: String,
     pub note: Option<String>,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeagueCompletedMatch {
+    pub game_id: i64,
+    pub queue_name: Option<String>,
+    pub played_at: Option<String>,
+    pub game_duration_seconds: Option<i64>,
+    pub result: MatchResult,
+    pub participants: Vec<LeagueCompletedParticipant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeagueCompletedParticipant {
+    pub participant_id: i64,
+    pub team_id: i64,
+    pub display_name: String,
+    pub player_puuid: Option<String>,
+    pub profile_icon_id: Option<i64>,
+    pub champion_id: Option<i64>,
+    pub champion_name: String,
+    pub role: Option<String>,
+    pub lane: Option<String>,
+    pub result: MatchResult,
+    pub kills: i64,
+    pub deaths: i64,
+    pub assists: i64,
+    pub kda: Option<f64>,
+    pub cs: i64,
+    pub gold_earned: i64,
+    pub damage_to_champions: i64,
+    pub vision_score: i64,
+    pub items: Vec<i64>,
+    pub runes: Vec<i64>,
+    pub spells: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,6 +454,105 @@ pub fn get_league_champion_icon(
         .map_err(ApplicationError::from)
 }
 
+pub fn get_post_match_detail(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+    input: PostMatchDetailInput,
+) -> Result<PostMatchDetail, ApplicationError> {
+    validate_game_id(input.game_id)?;
+    let completed_match = reader
+        .completed_match(input.game_id)
+        .map_err(ApplicationError::from)?;
+
+    post_match_detail_from_completed_match(store, completed_match)
+}
+
+pub fn get_post_match_participant_profile(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+    input: ParticipantPublicProfileInput,
+) -> Result<ParticipantPublicProfile, ApplicationError> {
+    validate_game_and_participant_ids(input.game_id, input.participant_id)?;
+    let recent_limit = normalize_match_limit(input.recent_limit.unwrap_or(DEFAULT_PUBLIC_RECENT_LIMIT))?;
+    let completed_match = reader
+        .completed_match(input.game_id)
+        .map_err(ApplicationError::from)?;
+    let participant = completed_match
+        .participants
+        .iter()
+        .find(|participant| participant.participant_id == input.participant_id)
+        .ok_or_else(|| {
+            ApplicationError::Validation(
+                "Participant was not found in the completed match".to_string(),
+            )
+        })?;
+    let note = match participant.player_puuid.as_deref() {
+        Some(player_puuid) => store
+            .get_player_note(player_puuid)
+            .map_err(ApplicationError::Storage)?,
+        None => None,
+    };
+    let mut warnings = Vec::new();
+    let recent_stats = match participant.player_puuid.as_deref() {
+        Some(player_puuid) => match reader.participant_recent_stats(player_puuid, recent_limit) {
+            Ok(stats) => Some(stats),
+            Err(_) => {
+                warnings.push(LeagueDataWarning {
+                    section: LeagueDataSection::RecentStats,
+                    message: "Participant recent stats are unavailable from the local client"
+                        .to_string(),
+                });
+                None
+            }
+        },
+        None => {
+            warnings.push(LeagueDataWarning {
+                section: LeagueDataSection::Participants,
+                message: "Participant public profile identity is unavailable".to_string(),
+            });
+            None
+        }
+    };
+
+    Ok(ParticipantPublicProfile {
+        game_id: input.game_id,
+        participant_id: input.participant_id,
+        display_name: participant.display_name.clone(),
+        profile_icon_id: participant.profile_icon_id,
+        recent_stats,
+        note: note.map(|note| player_note_view(input.game_id, input.participant_id, Some(note))),
+        warnings,
+    })
+}
+
+pub fn save_player_note(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+    input: SavePlayerNoteInput,
+) -> Result<PlayerNoteView, ApplicationError> {
+    let (player_puuid, display_name) = resolve_post_match_participant_identity(
+        reader,
+        input.game_id,
+        input.participant_id,
+    )?;
+
+    save_player_note_for_resolved_player(store, input, player_puuid, display_name)
+}
+
+pub fn clear_player_note(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+    input: ClearPlayerNoteInput,
+) -> Result<ClearPlayerNoteResult, ApplicationError> {
+    let (player_puuid, _) = resolve_post_match_participant_identity(
+        reader,
+        input.game_id,
+        input.participant_id,
+    )?;
+
+    clear_player_note_for_resolved_player(store, input, player_puuid.as_str())
+}
+
 pub fn save_player_note_for_resolved_player(
     store: &impl AppStore,
     input: SavePlayerNoteInput,
@@ -479,6 +635,163 @@ pub fn player_note_view(
     }
 }
 
+fn resolve_post_match_participant_identity(
+    reader: &impl LeagueClientReader,
+    game_id: i64,
+    participant_id: i64,
+) -> Result<(String, String), ApplicationError> {
+    validate_game_and_participant_ids(game_id, participant_id)?;
+    let completed_match = reader
+        .completed_match(game_id)
+        .map_err(ApplicationError::from)?;
+    let participant = completed_match
+        .participants
+        .iter()
+        .find(|participant| participant.participant_id == participant_id)
+        .ok_or_else(|| {
+            ApplicationError::Validation(
+                "Participant was not found in the completed match".to_string(),
+            )
+        })?;
+    let player_puuid = participant.player_puuid.clone().ok_or_else(|| {
+        ApplicationError::Validation("Participant cannot be linked to local notes".to_string())
+    })?;
+
+    Ok((player_puuid, participant.display_name.clone()))
+}
+
+fn post_match_detail_from_completed_match(
+    store: &impl AppStore,
+    completed_match: LeagueCompletedMatch,
+) -> Result<PostMatchDetail, ApplicationError> {
+    let mut participants = Vec::new();
+
+    for participant in completed_match.participants {
+        let note_summary = player_note_summary(store, participant.player_puuid.as_deref())?;
+        participants.push(PostMatchParticipant {
+            participant_id: participant.participant_id,
+            team_id: participant.team_id,
+            display_name: participant.display_name,
+            champion_id: participant.champion_id,
+            champion_name: participant.champion_name,
+            role: participant.role,
+            lane: participant.lane,
+            profile_icon_id: participant.profile_icon_id,
+            result: participant.result,
+            kills: participant.kills,
+            deaths: participant.deaths,
+            assists: participant.assists,
+            kda: participant.kda,
+            cs: participant.cs,
+            gold_earned: participant.gold_earned,
+            damage_to_champions: participant.damage_to_champions,
+            vision_score: participant.vision_score,
+            items: participant.items,
+            runes: participant.runes,
+            spells: participant.spells,
+            note_summary,
+        });
+    }
+
+    let teams = post_match_teams(&participants);
+    let comparison = post_match_comparison(&participants);
+
+    Ok(PostMatchDetail {
+        game_id: completed_match.game_id,
+        queue_name: completed_match.queue_name,
+        played_at: completed_match.played_at,
+        game_duration_seconds: completed_match.game_duration_seconds,
+        result: completed_match.result,
+        teams,
+        comparison,
+        warnings: Vec::new(),
+    })
+}
+
+fn post_match_teams(participants: &[PostMatchParticipant]) -> Vec<PostMatchTeam> {
+    let mut team_ids: Vec<i64> = participants
+        .iter()
+        .map(|participant| participant.team_id)
+        .collect();
+    team_ids.sort_unstable();
+    team_ids.dedup();
+
+    team_ids
+        .into_iter()
+        .map(|team_id| {
+            let team_participants: Vec<PostMatchParticipant> = participants
+                .iter()
+                .filter(|participant| participant.team_id == team_id)
+                .cloned()
+                .collect();
+            let totals = team_totals(&team_participants);
+
+            PostMatchTeam {
+                team_id,
+                result: team_participants
+                    .first()
+                    .map(|participant| participant.result)
+                    .unwrap_or(MatchResult::Unknown),
+                participants: team_participants,
+                totals,
+            }
+        })
+        .collect()
+}
+
+fn team_totals(participants: &[PostMatchParticipant]) -> PostMatchTeamTotals {
+    PostMatchTeamTotals {
+        kills: participants.iter().map(|participant| participant.kills).sum(),
+        deaths: participants.iter().map(|participant| participant.deaths).sum(),
+        assists: participants.iter().map(|participant| participant.assists).sum(),
+        gold_earned: participants
+            .iter()
+            .map(|participant| participant.gold_earned)
+            .sum(),
+        damage_to_champions: participants
+            .iter()
+            .map(|participant| participant.damage_to_champions)
+            .sum(),
+        vision_score: participants
+            .iter()
+            .map(|participant| participant.vision_score)
+            .sum(),
+    }
+}
+
+fn post_match_comparison(participants: &[PostMatchParticipant]) -> PostMatchComparison {
+    PostMatchComparison {
+        highest_kda: metric_leader(participants, |participant| participant.kda.unwrap_or(0.0)),
+        most_cs: metric_leader(participants, |participant| participant.cs as f64),
+        most_gold: metric_leader(participants, |participant| participant.gold_earned as f64),
+        most_damage: metric_leader(participants, |participant| {
+            participant.damage_to_champions as f64
+        }),
+        highest_vision: metric_leader(participants, |participant| {
+            participant.vision_score as f64
+        }),
+    }
+}
+
+fn metric_leader(
+    participants: &[PostMatchParticipant],
+    metric: impl Fn(&PostMatchParticipant) -> f64,
+) -> Option<ParticipantMetricLeader> {
+    participants
+        .iter()
+        .map(|participant| (participant, metric(participant)))
+        .max_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(participant, value)| ParticipantMetricLeader {
+            participant_id: participant.participant_id,
+            display_name: participant.display_name.clone(),
+            value,
+        })
+}
+
 fn validate_settings(input: SettingsInput) -> Result<SettingsValues, ApplicationError> {
     let startup_page = StartupPage::parse(input.startup_page.as_str()).ok_or_else(|| {
         ApplicationError::Validation("Startup page must be dashboard, activity, or settings".into())
@@ -533,15 +846,21 @@ fn validate_game_and_participant_ids(
     game_id: i64,
     participant_id: i64,
 ) -> Result<(), ApplicationError> {
-    if game_id <= 0 {
-        return Err(ApplicationError::Validation(
-            "Game id must be greater than 0".to_string(),
-        ));
-    }
+    validate_game_id(game_id)?;
 
     if participant_id <= 0 {
         return Err(ApplicationError::Validation(
             "Participant id must be greater than 0".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_game_id(game_id: i64) -> Result<(), ApplicationError> {
+    if game_id <= 0 {
+        return Err(ApplicationError::Validation(
+            "Game id must be greater than 0".to_string(),
         ));
     }
 
@@ -1103,6 +1422,52 @@ mod tests {
         assert!(summary.tags.is_empty());
     }
 
+    #[test]
+    fn post_match_detail_groups_teams_and_hydrates_notes() {
+        let store = FakeStore::new(default_settings());
+        store
+            .save_player_note(StoredPlayerNoteInput {
+                player_puuid: "self-puuid".to_string(),
+                last_display_name: "Player One".to_string(),
+                note: Some("Played well".to_string()),
+                tags: vec!["carry".to_string()],
+            })
+            .expect("note saves");
+        let reader = FakeLeagueClientReader::with_completed_match(sample_completed_match());
+
+        let detail = get_post_match_detail(&store, &reader, PostMatchDetailInput { game_id: 10 })
+            .expect("post-match detail reads");
+
+        assert_eq!(detail.teams.len(), 2);
+        assert_eq!(detail.teams[0].participants.len(), 1);
+        assert_eq!(detail.teams[0].totals.kills, 7);
+        assert_eq!(detail.comparison.most_damage.unwrap().participant_id, 2);
+        assert!(detail.teams[0].participants[0].note_summary.has_note);
+        assert_eq!(detail.teams[0].participants[0].note_summary.tags, vec!["carry"]);
+    }
+
+    #[test]
+    fn participant_profile_uses_completed_match_context_without_exposing_puuid() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::with_completed_match(sample_completed_match());
+
+        let profile = get_post_match_participant_profile(
+            &store,
+            &reader,
+            ParticipantPublicProfileInput {
+                game_id: 10,
+                participant_id: 2,
+                recent_limit: Some(3),
+            },
+        )
+        .expect("participant profile reads");
+
+        assert_eq!(profile.display_name, "Player Two");
+        assert_eq!(profile.recent_stats.as_ref().unwrap().match_count, 3);
+        assert!(format!("{profile:?}").contains("Player Two"));
+        assert!(!format!("{profile:?}").contains("enemy-puuid"));
+    }
+
     struct FakeStore {
         settings: RefCell<AppSettings>,
         activity_entries: RefCell<Vec<ActivityEntry>>,
@@ -1268,6 +1633,7 @@ mod tests {
 
     struct FakeLeagueClientReader {
         data: LeagueSelfData,
+        completed_match: RefCell<Option<LeagueCompletedMatch>>,
         last_match_limit: RefCell<Option<i64>>,
     }
 
@@ -1285,6 +1651,21 @@ mod tests {
         fn with_data(data: LeagueSelfData) -> Self {
             Self {
                 data,
+                completed_match: RefCell::new(None),
+                last_match_limit: RefCell::new(None),
+            }
+        }
+
+        fn with_completed_match(completed_match: LeagueCompletedMatch) -> Self {
+            Self {
+                data: LeagueSelfData {
+                    status: connected_status(),
+                    summoner: None,
+                    ranked_queues: Vec::new(),
+                    recent_matches: Vec::new(),
+                    data_warnings: Vec::new(),
+                },
+                completed_match: RefCell::new(Some(completed_match)),
                 last_match_limit: RefCell::new(None),
             }
         }
@@ -1332,6 +1713,34 @@ mod tests {
                 bytes: vec![champion_id as u8],
             })
         }
+
+        fn completed_match(
+            &self,
+            game_id: i64,
+        ) -> Result<LeagueCompletedMatch, LeagueClientReadError> {
+            self.completed_match
+                .borrow()
+                .clone()
+                .filter(|completed_match| completed_match.game_id == game_id)
+                .ok_or_else(|| {
+                    LeagueClientReadError::Integration(
+                        "Completed match was not found in current user's recent history"
+                            .to_string(),
+                    )
+                })
+        }
+
+        fn participant_recent_stats(
+            &self,
+            _player_puuid: &str,
+            limit: i64,
+        ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+            Ok(ParticipantRecentStats {
+                match_count: limit as usize,
+                average_kda: Some(3.5),
+                recent_champions: vec!["Ahri".to_string()],
+            })
+        }
     }
 
     fn connected_status() -> LeagueClientStatus {
@@ -1367,6 +1776,64 @@ mod tests {
             kda: None,
             played_at: Some("2026-04-19T12:00:00Z".to_string()),
             game_duration_seconds: Some(1800),
+        }
+    }
+
+    fn sample_completed_match() -> LeagueCompletedMatch {
+        LeagueCompletedMatch {
+            game_id: 10,
+            queue_name: Some("Ranked Solo/Duo".to_string()),
+            played_at: Some("2026-04-19T12:00:00Z".to_string()),
+            game_duration_seconds: Some(1880),
+            result: MatchResult::Win,
+            participants: vec![
+                LeagueCompletedParticipant {
+                    participant_id: 1,
+                    team_id: 100,
+                    display_name: "Player One".to_string(),
+                    player_puuid: Some("self-puuid".to_string()),
+                    profile_icon_id: Some(1),
+                    champion_id: Some(103),
+                    champion_name: "Ahri".to_string(),
+                    role: Some("SOLO".to_string()),
+                    lane: Some("MIDDLE".to_string()),
+                    result: MatchResult::Win,
+                    kills: 7,
+                    deaths: 1,
+                    assists: 8,
+                    kda: Some(15.0),
+                    cs: 210,
+                    gold_earned: 12_000,
+                    damage_to_champions: 22_000,
+                    vision_score: 18,
+                    items: vec![1056, 3020],
+                    runes: vec![8112],
+                    spells: vec![4, 14],
+                },
+                LeagueCompletedParticipant {
+                    participant_id: 2,
+                    team_id: 200,
+                    display_name: "Player Two".to_string(),
+                    player_puuid: Some("enemy-puuid".to_string()),
+                    profile_icon_id: Some(2),
+                    champion_id: Some(266),
+                    champion_name: "Aatrox".to_string(),
+                    role: Some("SOLO".to_string()),
+                    lane: Some("TOP".to_string()),
+                    result: MatchResult::Loss,
+                    kills: 5,
+                    deaths: 7,
+                    assists: 4,
+                    kda: Some(1.3),
+                    cs: 180,
+                    gold_earned: 10_000,
+                    damage_to_champions: 25_000,
+                    vision_score: 12,
+                    items: vec![1055, 3047],
+                    runes: vec![8010],
+                    spells: vec![4, 12],
+                },
+            ],
         }
     }
 }

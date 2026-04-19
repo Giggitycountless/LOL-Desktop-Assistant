@@ -4,7 +4,7 @@ use application::{LeagueClientReadError, LeagueClientReader};
 use domain::{
     CurrentSummonerProfile, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
     LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData, MatchResult,
-    RankedQueue, RankedQueueSummary, RecentMatchSummary,
+    ParticipantRecentStats, RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::Deserialize;
@@ -16,6 +16,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const LEAGUE_CLIENT_PROCESSES: [&str; 2] = ["LeagueClientUx.exe", "LeagueClient.exe"];
 const PROFILE_ICON_MIME: &str = "image/jpeg";
 const CHAMPION_ICON_MIME: &str = "image/png";
+const MAX_COMPLETED_MATCH_SCAN: i64 = 20;
 
 pub fn layer_name() -> &'static str {
     "adapters"
@@ -92,6 +93,68 @@ impl LocalLeagueClient {
         session
             .get_image_asset(champion_icon_path(champion_id).as_str(), CHAMPION_ICON_MIME)
             .map_err(read_error_from_request)
+    }
+
+    fn read_completed_match(
+        &self,
+        game_id: i64,
+    ) -> Result<application::LeagueCompletedMatch, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+        let summoner = session
+            .get_json::<LcuSummoner>("/lol-summoner/v1/current-summoner")
+            .map_err(read_error_from_request)?;
+        let champion_names = session
+            .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
+            .map(champion_name_map)
+            .unwrap_or_default();
+        let history = session
+            .get_json::<LcuMatchHistoryResponse>(current_matches_path(MAX_COMPLETED_MATCH_SCAN).as_str())
+            .map_err(read_error_from_request)?;
+
+        history
+            .games
+            .and_then(|games| {
+                games
+                    .games
+                    .into_iter()
+                    .find(|game| game.game_id == Some(game_id))
+            })
+            .and_then(|game| map_completed_match(game, &summoner, &champion_names))
+            .ok_or_else(|| {
+                LeagueClientReadError::Integration(
+                    "Completed match was not found in current user's recent history".to_string(),
+                )
+            })
+    }
+
+    fn read_participant_recent_stats(
+        &self,
+        player_puuid: &str,
+        limit: i64,
+    ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+        if !is_safe_lcu_path_id(player_puuid) {
+            return Err(LeagueClientReadError::Integration(
+                "Participant identity could not be used for local profile lookup".to_string(),
+            ));
+        }
+
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+        let champion_names = session
+            .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
+            .map(champion_name_map)
+            .unwrap_or_default();
+        let history = session
+            .get_json::<LcuMatchHistoryResponse>(puuid_matches_path(player_puuid, limit).as_str())
+            .map_err(read_error_from_request)?;
+        let recent_matches = map_recent_matches_for_puuid(history, player_puuid, &champion_names);
+
+        Ok(participant_recent_stats(recent_matches))
     }
 
     fn open_session(&self) -> SessionOpenResult {
@@ -210,6 +273,21 @@ impl LeagueClientReader for LocalLeagueClient {
 
     fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError> {
         self.read_champion_icon(champion_id)
+    }
+
+    fn completed_match(
+        &self,
+        game_id: i64,
+    ) -> Result<application::LeagueCompletedMatch, LeagueClientReadError> {
+        self.read_completed_match(game_id)
+    }
+
+    fn participant_recent_stats(
+        &self,
+        player_puuid: &str,
+        limit: i64,
+    ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+        self.read_participant_recent_stats(player_puuid, limit)
     }
 }
 
@@ -503,9 +581,7 @@ fn build_self_data(session: LcuSession, summoner: LcuSummoner, match_limit: i64)
     let champion_names_result = session
         .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json");
     let ranked_result = session.get_json::<LcuRankedStats>("/lol-ranked/v1/current-ranked-stats");
-    let matches_path = format!(
-        "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={match_limit}"
-    );
+    let matches_path = current_matches_path(match_limit);
     let matches_result = session.get_json::<LcuMatchHistoryResponse>(matches_path.as_str());
 
     compose_self_data(
@@ -735,9 +811,13 @@ struct LcuGame {
 #[serde(rename_all = "camelCase")]
 struct LcuParticipant {
     participant_id: Option<i64>,
+    team_id: Option<i64>,
     champion_id: Option<i64>,
     champion_name: Option<String>,
+    spell1_id: Option<i64>,
+    spell2_id: Option<i64>,
     stats: Option<LcuParticipantStats>,
+    timeline: Option<LcuParticipantTimeline>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -747,6 +827,31 @@ struct LcuParticipantStats {
     deaths: Option<i64>,
     assists: Option<i64>,
     win: Option<bool>,
+    total_minions_killed: Option<i64>,
+    neutral_minions_killed: Option<i64>,
+    gold_earned: Option<i64>,
+    total_damage_dealt_to_champions: Option<i64>,
+    vision_score: Option<i64>,
+    item0: Option<i64>,
+    item1: Option<i64>,
+    item2: Option<i64>,
+    item3: Option<i64>,
+    item4: Option<i64>,
+    item5: Option<i64>,
+    item6: Option<i64>,
+    perk0: Option<i64>,
+    perk1: Option<i64>,
+    perk2: Option<i64>,
+    perk3: Option<i64>,
+    perk4: Option<i64>,
+    perk5: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuParticipantTimeline {
+    role: Option<String>,
+    lane: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -759,10 +864,37 @@ struct LcuParticipantIdentity {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LcuPlayer {
+    summoner_name: Option<String>,
+    game_name: Option<String>,
+    tag_line: Option<String>,
     summoner_id: Option<i64>,
     account_id: Option<i64>,
     current_account_id: Option<i64>,
+    profile_icon: Option<i64>,
+    profile_icon_id: Option<i64>,
     puuid: Option<String>,
+}
+
+impl LcuParticipantStats {
+    fn items(&self) -> Vec<i64> {
+        [
+            self.item0, self.item1, self.item2, self.item3, self.item4, self.item5, self.item6,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| *value > 0)
+        .collect()
+    }
+
+    fn runes(&self) -> Vec<i64> {
+        [
+            self.perk0, self.perk1, self.perk2, self.perk3, self.perk4, self.perk5,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|value| *value > 0)
+        .collect()
+    }
 }
 
 fn map_recent_matches(
@@ -777,6 +909,23 @@ fn map_recent_matches(
                 .games
                 .into_iter()
                 .filter_map(|game| map_recent_match(game, summoner, champion_names))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn map_recent_matches_for_puuid(
+    history: LcuMatchHistoryResponse,
+    player_puuid: &str,
+    champion_names: &HashMap<i64, String>,
+) -> Vec<RecentMatchSummary> {
+    history
+        .games
+        .map(|games| {
+            games
+                .games
+                .into_iter()
+                .filter_map(|game| map_recent_match_for_puuid(game, player_puuid, champion_names))
                 .collect()
         })
         .unwrap_or_default()
@@ -824,6 +973,168 @@ fn map_recent_match(
     })
 }
 
+fn map_recent_match_for_puuid(
+    game: LcuGame,
+    player_puuid: &str,
+    champion_names: &HashMap<i64, String>,
+) -> Option<RecentMatchSummary> {
+    let participant_id = game
+        .participant_identities
+        .iter()
+        .find_map(|identity| match &identity.player {
+            Some(player) if strings_match(Some(player_puuid), player.puuid.as_deref()) => {
+                identity.participant_id
+            }
+            _ => None,
+        })?;
+    let participant = game
+        .participants
+        .iter()
+        .find(|participant| participant.participant_id == Some(participant_id))?;
+    let stats = participant.stats.as_ref()?;
+
+    Some(recent_match_from_participant(
+        &game,
+        participant,
+        stats,
+        champion_names,
+    ))
+}
+
+fn recent_match_from_participant(
+    game: &LcuGame,
+    participant: &LcuParticipant,
+    stats: &LcuParticipantStats,
+    champion_names: &HashMap<i64, String>,
+) -> RecentMatchSummary {
+    let kills = stats.kills.unwrap_or_default();
+    let deaths = stats.deaths.unwrap_or_default();
+    let assists = stats.assists.unwrap_or_default();
+
+    RecentMatchSummary {
+        game_id: game.game_id.unwrap_or_default(),
+        champion_id: participant.champion_id,
+        champion_name: participant_champion_name(participant, champion_names),
+        queue_name: game.queue_id.and_then(queue_name).map(str::to_string),
+        result: match stats.win {
+            Some(true) => MatchResult::Win,
+            Some(false) => MatchResult::Loss,
+            None => MatchResult::Unknown,
+        },
+        kills,
+        deaths,
+        assists,
+        kda: Some(round_to_tenth(calculate_kda(kills, deaths, assists))),
+        played_at: game
+            .game_creation_date
+            .clone()
+            .or_else(|| value_to_string(game.game_creation.clone())),
+        game_duration_seconds: game.game_duration,
+    }
+}
+
+fn map_completed_match(
+    game: LcuGame,
+    summoner: &LcuSummoner,
+    champion_names: &HashMap<i64, String>,
+) -> Option<application::LeagueCompletedMatch> {
+    let self_result = game
+        .participant_identities
+        .iter()
+        .find_map(|identity| match &identity.player {
+            Some(player) if summoner.matches_player(player) => identity.participant_id,
+            _ => None,
+        })
+        .and_then(|participant_id| {
+            game.participants
+                .iter()
+                .find(|participant| participant.participant_id == Some(participant_id))
+        })
+        .and_then(|participant| participant.stats.as_ref())
+        .map(match_result_from_stats)
+        .unwrap_or(MatchResult::Unknown);
+    let participants = game
+        .participants
+        .iter()
+        .filter_map(|participant| {
+            let player = participant
+                .participant_id
+                .and_then(|participant_id| player_for_participant(&game, participant_id));
+            map_completed_participant(participant, player, champion_names)
+        })
+        .collect();
+
+    Some(application::LeagueCompletedMatch {
+        game_id: game.game_id?,
+        queue_name: game.queue_id.and_then(queue_name).map(str::to_string),
+        played_at: game
+            .game_creation_date
+            .or_else(|| value_to_string(game.game_creation)),
+        game_duration_seconds: game.game_duration,
+        result: self_result,
+        participants,
+    })
+}
+
+fn player_for_participant(game: &LcuGame, participant_id: i64) -> Option<&LcuPlayer> {
+    game.participant_identities.iter().find_map(|identity| {
+        if identity.participant_id == Some(participant_id) {
+            identity.player.as_ref()
+        } else {
+            None
+        }
+    })
+}
+
+fn map_completed_participant(
+    participant: &LcuParticipant,
+    player: Option<&LcuPlayer>,
+    champion_names: &HashMap<i64, String>,
+) -> Option<application::LeagueCompletedParticipant> {
+    let stats = participant.stats.as_ref()?;
+    let participant_id = participant.participant_id?;
+    let kills = stats.kills.unwrap_or_default();
+    let deaths = stats.deaths.unwrap_or_default();
+    let assists = stats.assists.unwrap_or_default();
+
+    Some(application::LeagueCompletedParticipant {
+        participant_id,
+        team_id: participant.team_id.unwrap_or_default(),
+        display_name: player
+            .and_then(player_display_name)
+            .unwrap_or_else(|| format!("Participant {participant_id}")),
+        player_puuid: player.and_then(|value| non_empty(value.puuid.as_deref()).map(str::to_string)),
+        profile_icon_id: player.and_then(player_profile_icon_id),
+        champion_id: participant.champion_id,
+        champion_name: participant_champion_name(participant, champion_names),
+        role: participant
+            .timeline
+            .as_ref()
+            .and_then(|timeline| non_empty(timeline.role.as_deref()).map(str::to_string)),
+        lane: participant
+            .timeline
+            .as_ref()
+            .and_then(|timeline| non_empty(timeline.lane.as_deref()).map(str::to_string)),
+        result: match_result_from_stats(stats),
+        kills,
+        deaths,
+        assists,
+        kda: Some(round_to_tenth(calculate_kda(kills, deaths, assists))),
+        cs: stats.total_minions_killed.unwrap_or_default()
+            + stats.neutral_minions_killed.unwrap_or_default(),
+        gold_earned: stats.gold_earned.unwrap_or_default(),
+        damage_to_champions: stats.total_damage_dealt_to_champions.unwrap_or_default(),
+        vision_score: stats.vision_score.unwrap_or_default(),
+        items: stats.items(),
+        runes: stats.runes(),
+        spells: [participant.spell1_id, participant.spell2_id]
+            .into_iter()
+            .flatten()
+            .filter(|value| *value > 0)
+            .collect(),
+    })
+}
+
 fn participant_champion_name(
     participant: &LcuParticipant,
     champion_names: &HashMap<i64, String>,
@@ -837,6 +1148,57 @@ fn participant_champion_name(
         .and_then(|id| champion_names.get(&id).cloned())
         .or_else(|| participant.champion_id.map(|id| format!("Champion {id}")))
         .unwrap_or_else(|| "Unknown champion".to_string())
+}
+
+fn participant_recent_stats(matches: Vec<RecentMatchSummary>) -> ParticipantRecentStats {
+    let mut total_kda = 0.0;
+    let mut match_count = 0;
+    let mut recent_champions = Vec::new();
+
+    for match_summary in matches {
+        match_count += 1;
+        total_kda += calculate_kda(
+            match_summary.kills,
+            match_summary.deaths,
+            match_summary.assists,
+        );
+        recent_champions.push(match_summary.champion_name);
+    }
+
+    let average_kda = if match_count == 0 {
+        None
+    } else {
+        Some(round_to_tenth(total_kda / match_count as f64))
+    };
+
+    ParticipantRecentStats {
+        match_count,
+        average_kda,
+        recent_champions,
+    }
+}
+
+fn match_result_from_stats(stats: &LcuParticipantStats) -> MatchResult {
+    match stats.win {
+        Some(true) => MatchResult::Win,
+        Some(false) => MatchResult::Loss,
+        None => MatchResult::Unknown,
+    }
+}
+
+fn player_display_name(player: &LcuPlayer) -> Option<String> {
+    match (
+        non_empty(player.game_name.as_deref()),
+        non_empty(player.tag_line.as_deref()),
+    ) {
+        (Some(game_name), Some(tag_line)) => Some(format!("{game_name}#{tag_line}")),
+        (Some(game_name), None) => Some(game_name.to_string()),
+        _ => non_empty(player.summoner_name.as_deref()).map(str::to_string),
+    }
+}
+
+fn player_profile_icon_id(player: &LcuPlayer) -> Option<i64> {
+    player.profile_icon_id.or(player.profile_icon)
 }
 
 fn queue_name(queue_id: i64) -> Option<&'static str> {
@@ -858,6 +1220,14 @@ fn profile_icon_path(profile_icon_id: i64) -> String {
 
 fn champion_icon_path(champion_id: i64) -> String {
     format!("/lol-game-data/assets/v1/champion-icons/{champion_id}.png")
+}
+
+fn current_matches_path(limit: i64) -> String {
+    format!("/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={limit}")
+}
+
+fn puuid_matches_path(player_puuid: &str, limit: i64) -> String {
+    format!("/lol-match-history/v1/products/lol/{player_puuid}/matches?begIndex=0&endIndex={limit}")
 }
 
 fn calculate_kda(kills: i64, deaths: i64, assists: i64) -> f64 {
@@ -900,6 +1270,13 @@ fn ids_match(left: Option<i64>, right: Option<i64>) -> bool {
 
 fn strings_match(left: Option<&str>, right: Option<&str>) -> bool {
     left.zip(right).is_some_and(|(a, b)| a == b)
+}
+
+fn is_safe_lcu_path_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
 }
 
 fn value_to_string(value: Option<Value>) -> Option<String> {
@@ -1030,33 +1407,88 @@ mod tests {
                         participants: vec![
                             LcuParticipant {
                                 participant_id: Some(1),
+                                team_id: Some(100),
                                 champion_id: Some(266),
                                 champion_name: None,
+                                spell1_id: Some(4),
+                                spell2_id: Some(12),
                                 stats: Some(LcuParticipantStats {
                                     kills: Some(0),
                                     deaths: Some(5),
                                     assists: Some(1),
                                     win: Some(false),
+                                    total_minions_killed: Some(100),
+                                    neutral_minions_killed: Some(10),
+                                    gold_earned: Some(8_000),
+                                    total_damage_dealt_to_champions: Some(9_000),
+                                    vision_score: Some(11),
+                                    item0: Some(1055),
+                                    item1: None,
+                                    item2: None,
+                                    item3: None,
+                                    item4: None,
+                                    item5: None,
+                                    item6: None,
+                                    perk0: Some(8010),
+                                    perk1: None,
+                                    perk2: None,
+                                    perk3: None,
+                                    perk4: None,
+                                    perk5: None,
+                                }),
+                                timeline: Some(LcuParticipantTimeline {
+                                    role: Some("SOLO".to_string()),
+                                    lane: Some("TOP".to_string()),
                                 }),
                             },
                             LcuParticipant {
                                 participant_id: Some(2),
+                                team_id: Some(200),
                                 champion_id: Some(103),
                                 champion_name: None,
+                                spell1_id: Some(4),
+                                spell2_id: Some(14),
                                 stats: Some(LcuParticipantStats {
                                     kills: Some(7),
                                     deaths: Some(1),
                                     assists: Some(8),
                                     win: Some(true),
+                                    total_minions_killed: Some(200),
+                                    neutral_minions_killed: Some(10),
+                                    gold_earned: Some(12_000),
+                                    total_damage_dealt_to_champions: Some(22_000),
+                                    vision_score: Some(18),
+                                    item0: Some(1056),
+                                    item1: Some(3020),
+                                    item2: None,
+                                    item3: None,
+                                    item4: None,
+                                    item5: None,
+                                    item6: None,
+                                    perk0: Some(8112),
+                                    perk1: None,
+                                    perk2: None,
+                                    perk3: None,
+                                    perk4: None,
+                                    perk5: None,
+                                }),
+                                timeline: Some(LcuParticipantTimeline {
+                                    role: Some("SOLO".to_string()),
+                                    lane: Some("MIDDLE".to_string()),
                                 }),
                             },
                         ],
                         participant_identities: vec![LcuParticipantIdentity {
                             participant_id: Some(2),
                             player: Some(LcuPlayer {
+                                summoner_name: Some("Player".to_string()),
+                                game_name: None,
+                                tag_line: None,
                                 summoner_id: Some(99),
                                 account_id: Some(55),
                                 current_account_id: None,
+                                profile_icon: Some(1),
+                                profile_icon_id: None,
                                 puuid: Some("self-puuid".to_string()),
                             }),
                         }],

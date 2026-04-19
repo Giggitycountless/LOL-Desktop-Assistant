@@ -3,12 +3,14 @@ use std::{error::Error, path::Path};
 use adapters::LocalLeagueClient;
 use application::{
     ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
-    LeagueProfileIconInput, LeagueSelfSnapshotInput, SettingsInput,
+    LeagueProfileIconInput, LeagueSelfSnapshotInput, ParticipantPublicProfileInput,
+    PostMatchDetailInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, LeagueClientStatus, LeagueImageAsset, LeagueSelfSnapshot,
-    LocalDataExport, SettingsValues,
+    ClearPlayerNoteResult, HealthReport, ImportLocalDataResult, LeagueClientStatus,
+    LeagueImageAsset, LeagueSelfSnapshot, LocalDataExport, ParticipantPublicProfile,
+    PlayerNoteView, PostMatchDetail, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -85,6 +87,36 @@ pub struct LeagueProfileIconCommand {
 #[serde(rename_all = "camelCase")]
 pub struct LeagueChampionIconCommand {
     pub champion_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostMatchDetailCommand {
+    pub game_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipantPublicProfileCommand {
+    pub game_id: i64,
+    pub participant_id: i64,
+    pub recent_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavePlayerNoteCommand {
+    pub game_id: i64,
+    pub participant_id: i64,
+    pub note: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearPlayerNoteCommand {
+    pub game_id: i64,
+    pub participant_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,12 +274,77 @@ pub fn get_league_champion_icon(
     .map_err(CommandError::from)
 }
 
+pub fn get_post_match_detail(
+    state: &AppState,
+    command: PostMatchDetailCommand,
+) -> Result<PostMatchDetail, CommandError> {
+    application::get_post_match_detail(
+        &state.store,
+        &state.league_client,
+        PostMatchDetailInput {
+            game_id: command.game_id,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
+pub fn get_post_match_participant_profile(
+    state: &AppState,
+    command: ParticipantPublicProfileCommand,
+) -> Result<ParticipantPublicProfile, CommandError> {
+    application::get_post_match_participant_profile(
+        &state.store,
+        &state.league_client,
+        ParticipantPublicProfileInput {
+            game_id: command.game_id,
+            participant_id: command.participant_id,
+            recent_limit: command.recent_limit,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
+pub fn save_player_note(
+    state: &AppState,
+    command: SavePlayerNoteCommand,
+) -> Result<PlayerNoteView, CommandError> {
+    application::save_player_note(
+        &state.store,
+        &state.league_client,
+        application::SavePlayerNoteInput {
+            game_id: command.game_id,
+            participant_id: command.participant_id,
+            note: command.note,
+            tags: command.tags,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
+pub fn clear_player_note(
+    state: &AppState,
+    command: ClearPlayerNoteCommand,
+) -> Result<ClearPlayerNoteResult, CommandError> {
+    application::clear_player_note(
+        &state.store,
+        &state.league_client,
+        application::ClearPlayerNoteInput {
+            game_id: command.game_id,
+            participant_id: command.participant_id,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use domain::{
         ActivityKind, KdaTag, LeagueClientConnection, LeagueClientPhase, LeagueDataSection,
-        LeagueDataWarning, MatchResult, RecentMatchSummary, RecentPerformanceSummary, StartupPage,
+        LeagueDataWarning, MatchResult, ParticipantMetricLeader, ParticipantPublicProfile,
+        ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
+        PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
+        RecentMatchSummary, RecentPerformanceSummary, StartupPage,
     };
     use serde_json::json;
     use std::{
@@ -426,6 +523,38 @@ mod tests {
     }
 
     #[test]
+    fn post_match_commands_accept_frontend_payload_shapes() {
+        let detail: PostMatchDetailCommand = serde_json::from_value(json!({
+            "gameId": 10
+        }))
+        .expect("post-match detail command deserializes");
+        let profile: ParticipantPublicProfileCommand = serde_json::from_value(json!({
+            "gameId": 10,
+            "participantId": 2,
+            "recentLimit": 6
+        }))
+        .expect("participant profile command deserializes");
+        let note: SavePlayerNoteCommand = serde_json::from_value(json!({
+            "gameId": 10,
+            "participantId": 2,
+            "note": "Helpful teammate",
+            "tags": ["support", "calm"]
+        }))
+        .expect("save player note command deserializes");
+        let clear: ClearPlayerNoteCommand = serde_json::from_value(json!({
+            "gameId": 10,
+            "participantId": 2
+        }))
+        .expect("clear player note command deserializes");
+
+        assert_eq!(detail.game_id, 10);
+        assert_eq!(profile.participant_id, 2);
+        assert_eq!(profile.recent_limit, Some(6));
+        assert_eq!(note.tags, vec!["support", "calm"]);
+        assert_eq!(clear.game_id, 10);
+    }
+
+    #[test]
     fn league_status_serializes_frontend_shape() {
         let value = serde_json::to_value(LeagueClientStatus {
             is_running: true,
@@ -510,6 +639,57 @@ mod tests {
     }
 
     #[test]
+    fn post_match_detail_serializes_without_internal_identity_fields() {
+        let value = serde_json::to_value(sample_post_match_detail())
+            .expect("post-match detail serializes");
+        let serialized = value.to_string();
+
+        assert_eq!(value["gameId"], 10);
+        assert_eq!(value["teams"][0]["participants"][0]["participantId"], 1);
+        assert_eq!(
+            value["teams"][0]["participants"][0]["noteSummary"]["tags"],
+            json!(["carry"])
+        );
+        assert_eq!(value["comparison"]["mostDamage"]["participantId"], 2);
+        assert!(!serialized.contains("puuid"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("https://"));
+    }
+
+    #[test]
+    fn participant_profile_serializes_without_internal_identity_fields() {
+        let value = serde_json::to_value(ParticipantPublicProfile {
+            game_id: 10,
+            participant_id: 2,
+            display_name: "Visible Player".to_string(),
+            profile_icon_id: Some(29),
+            recent_stats: Some(ParticipantRecentStats {
+                match_count: 3,
+                average_kda: Some(2.5),
+                recent_champions: vec!["Ahri".to_string()],
+            }),
+            note: Some(PlayerNoteView {
+                game_id: 10,
+                participant_id: 2,
+                note: Some("Watch roams".to_string()),
+                tags: vec!["mid".to_string()],
+                updated_at: Some("2026-04-20 00:00:00".to_string()),
+            }),
+            warnings: Vec::new(),
+        })
+        .expect("participant profile serializes");
+        let serialized = value.to_string();
+
+        assert_eq!(value["recentStats"]["matchCount"], 3);
+        assert_eq!(value["note"]["tags"], json!(["mid"]));
+        assert!(!serialized.contains("puuid"));
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("https://"));
+    }
+
+    #[test]
     fn league_client_errors_serialize_command_shape() {
         let error = CommandError::from(ApplicationError::ClientAccess(
             "League Client rejected local authentication".to_string(),
@@ -535,5 +715,69 @@ mod tests {
             std::process::id(),
             stamp
         ))
+    }
+
+    fn sample_post_match_detail() -> PostMatchDetail {
+        PostMatchDetail {
+            game_id: 10,
+            queue_name: Some("Ranked Solo/Duo".to_string()),
+            played_at: Some("2026-04-19T12:00:00Z".to_string()),
+            game_duration_seconds: Some(1880),
+            result: MatchResult::Win,
+            teams: vec![PostMatchTeam {
+                team_id: 100,
+                result: MatchResult::Win,
+                totals: PostMatchTeamTotals {
+                    kills: 7,
+                    deaths: 1,
+                    assists: 8,
+                    gold_earned: 12_000,
+                    damage_to_champions: 22_000,
+                    vision_score: 18,
+                },
+                participants: vec![PostMatchParticipant {
+                    participant_id: 1,
+                    team_id: 100,
+                    display_name: "Visible Player".to_string(),
+                    champion_id: Some(103),
+                    champion_name: "Ahri".to_string(),
+                    role: Some("SOLO".to_string()),
+                    lane: Some("MIDDLE".to_string()),
+                    profile_icon_id: Some(29),
+                    result: MatchResult::Win,
+                    kills: 7,
+                    deaths: 1,
+                    assists: 8,
+                    kda: Some(15.0),
+                    cs: 210,
+                    gold_earned: 12_000,
+                    damage_to_champions: 22_000,
+                    vision_score: 18,
+                    items: vec![1056, 3020],
+                    runes: vec![8112],
+                    spells: vec![4, 14],
+                    note_summary: PlayerNoteSummary {
+                        has_note: true,
+                        tags: vec!["carry".to_string()],
+                    },
+                }],
+            }],
+            comparison: PostMatchComparison {
+                highest_kda: Some(ParticipantMetricLeader {
+                    participant_id: 1,
+                    display_name: "Visible Player".to_string(),
+                    value: 15.0,
+                }),
+                most_cs: None,
+                most_gold: None,
+                most_damage: Some(ParticipantMetricLeader {
+                    participant_id: 2,
+                    display_name: "Other Player".to_string(),
+                    value: 25_000.0,
+                }),
+                highest_vision: None,
+            },
+            warnings: Vec::new(),
+        }
     }
 }
