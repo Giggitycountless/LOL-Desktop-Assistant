@@ -20,6 +20,11 @@ fn get_settings(
 }
 
 #[tauri::command]
+fn get_settings_defaults() -> domain::SettingsValues {
+    platform::get_settings_defaults()
+}
+
+#[tauri::command]
 fn save_settings(
     state: State<'_, platform::AppState>,
     input: platform::SaveSettingsCommand,
@@ -43,6 +48,29 @@ fn create_activity_note(
     platform::create_activity_note(state.inner(), input)
 }
 
+#[tauri::command]
+fn export_local_data(
+    state: State<'_, platform::AppState>,
+) -> Result<domain::LocalDataExport, platform::CommandError> {
+    platform::export_local_data(state.inner())
+}
+
+#[tauri::command]
+fn import_local_data(
+    state: State<'_, platform::AppState>,
+    input: platform::ImportLocalDataCommand,
+) -> Result<domain::ImportLocalDataResult, platform::CommandError> {
+    platform::import_local_data(state.inner(), input)
+}
+
+#[tauri::command]
+fn clear_activity_entries(
+    state: State<'_, platform::AppState>,
+    input: platform::ClearActivityEntriesCommand,
+) -> Result<domain::ClearActivityResult, platform::CommandError> {
+    platform::clear_activity_entries(state.inner(), input)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| platform::setup_app(app))
@@ -50,9 +78,13 @@ fn main() {
             healthcheck,
             get_app_state,
             get_settings,
+            get_settings_defaults,
             save_settings,
             list_activity_entries,
-            create_activity_note
+            create_activity_note,
+            export_local_data,
+            import_local_data,
+            clear_activity_entries
         ])
         .run(tauri::generate_context!())
         .expect("failed to run LoL Desktop Assistant");

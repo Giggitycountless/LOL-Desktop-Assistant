@@ -1,7 +1,10 @@
 use std::{error::Error, path::Path};
 
 use application::{ActivityListInput, ActivityNoteInput, ApplicationError, SettingsInput};
-use domain::{ActivityEntry, AppSettings, AppSnapshot, DatabaseStatus, HealthReport};
+use domain::{
+    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
+    HealthReport, ImportLocalDataResult, LocalDataExport, SettingsValues,
+};
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
 use tauri::{Manager, Runtime};
@@ -37,6 +40,7 @@ pub struct SettingsPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ListActivityEntriesCommand {
     pub limit: Option<i64>,
+    pub kind: Option<ActivityKind>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,6 +48,18 @@ pub struct ListActivityEntriesCommand {
 pub struct CreateActivityNoteCommand {
     pub title: String,
     pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportLocalDataCommand {
+    pub json: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearActivityEntriesCommand {
+    pub confirm: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -90,6 +106,10 @@ pub fn get_settings(state: &AppState) -> Result<AppSettings, CommandError> {
     application::get_settings(&state.store).map_err(CommandError::from)
 }
 
+pub fn get_settings_defaults() -> SettingsValues {
+    application::settings_defaults()
+}
+
 pub fn save_settings(
     state: &AppState,
     command: SaveSettingsCommand,
@@ -113,6 +133,7 @@ pub fn list_activity_entries(
         &state.store,
         ActivityListInput {
             limit: command.limit,
+            kind: command.kind,
         },
     )?;
 
@@ -133,6 +154,24 @@ pub fn create_activity_note(
         },
     )
     .map_err(CommandError::from)
+}
+
+pub fn export_local_data(state: &AppState) -> Result<LocalDataExport, CommandError> {
+    application::export_local_data(&state.store).map_err(CommandError::from)
+}
+
+pub fn import_local_data(
+    state: &AppState,
+    command: ImportLocalDataCommand,
+) -> Result<ImportLocalDataResult, CommandError> {
+    application::import_local_data(&state.store, command.json.as_str()).map_err(CommandError::from)
+}
+
+pub fn clear_activity_entries(
+    state: &AppState,
+    command: ClearActivityEntriesCommand,
+) -> Result<ClearActivityResult, CommandError> {
+    application::clear_activity_entries(&state.store, command.confirm).map_err(CommandError::from)
 }
 
 #[cfg(test)]
@@ -160,6 +199,18 @@ mod tests {
         assert_eq!(command.settings.startup_page, "activity");
         assert!(command.settings.compact_mode);
         assert_eq!(command.settings.activity_limit, 25);
+    }
+
+    #[test]
+    fn activity_list_accepts_frontend_filter_shape() {
+        let command: ListActivityEntriesCommand = serde_json::from_value(json!({
+            "limit": 50,
+            "kind": "note"
+        }))
+        .expect("frontend-shaped activity list command deserializes");
+
+        assert_eq!(command.limit, Some(50));
+        assert_eq!(command.kind, Some(ActivityKind::Note));
     }
 
     #[test]
@@ -223,13 +274,54 @@ mod tests {
             },
         )
         .expect("settings save succeeds");
-        let entries = list_activity_entries(&state, ListActivityEntriesCommand { limit: Some(10) })
-            .expect("activity entries load");
+        let entries = list_activity_entries(
+            &state,
+            ListActivityEntriesCommand {
+                limit: Some(10),
+                kind: None,
+            },
+        )
+        .expect("activity entries load");
 
         assert_eq!(saved_settings.startup_page, StartupPage::Dashboard);
         assert!(entries.records.is_empty());
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn export_local_data_serializes_frontend_shape() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+
+        create_activity_note(
+            &state,
+            CreateActivityNoteCommand {
+                title: "Exported".to_string(),
+                body: None,
+            },
+        )
+        .expect("activity note creates");
+
+        let value = serde_json::to_value(export_local_data(&state).expect("local data export"))
+            .expect("local data serializes");
+
+        assert_eq!(value["formatVersion"], 1);
+        assert_eq!(value["settings"]["startupPage"], "dashboard");
+        assert_eq!(value["activityEntries"][0]["kind"], "note");
+        assert!(value.get("format_version").is_none());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn clear_activity_requires_confirm_true() {
+        let command: ClearActivityEntriesCommand = serde_json::from_value(json!({
+            "confirm": true
+        }))
+        .expect("frontend-shaped clear command deserializes");
+
+        assert!(command.confirm);
     }
 
     fn unique_temp_dir() -> PathBuf {
