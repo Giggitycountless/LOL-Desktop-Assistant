@@ -231,14 +231,20 @@ function PostMatchAnalysis({
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
 }) {
+  const maxDamage = Math.max(
+    1,
+    ...detail.teams.flatMap((team) => team.participants.map((participant) => participant.damageToChampions)),
+  );
+
   return (
     <div className="grid gap-4">
       <ComparisonStrip comparison={detail.comparison} />
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4">
         {detail.teams.map((team) => (
           <TeamBlock
             gameAssets={gameAssets}
             key={team.teamId}
+            maxDamage={maxDamage}
             onParticipantSelect={onParticipantSelect}
             participantImages={participantImages}
             team={team}
@@ -258,18 +264,20 @@ function PostMatchAnalysis({
 
 function TeamBlock({
   gameAssets,
+  maxDamage,
   onParticipantSelect,
   participantImages,
   team,
 }: {
   gameAssets: Record<string, LeagueGameAssetView>;
+  maxDamage: number;
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
   team: PostMatchTeam;
 }) {
   return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3">
-      <div className="flex items-center justify-between gap-3">
+    <div className="overflow-visible rounded-md border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2">
         <div>
           <p className="text-sm font-semibold text-zinc-950">Team {team.teamId}</p>
           <p className="mt-1 text-xs text-zinc-500">
@@ -279,16 +287,30 @@ function TeamBlock({
         <ResultBadge result={team.result} />
       </div>
 
-      <div className="mt-3 grid gap-2">
-        {team.participants.map((participant) => (
-          <ParticipantRow
-            gameAssets={gameAssets}
-            imageUrl={participant.championId ? participantImages[participant.championId] : undefined}
-            key={participant.participantId}
-            onSelect={() => onParticipantSelect(participant.participantId)}
-            participant={participant}
-          />
-        ))}
+      <div className="overflow-x-auto pb-2">
+        <div className="grid min-w-[58rem] grid-cols-[minmax(15rem,1.6fr)_4.25rem_5.5rem_minmax(8rem,0.8fr)_4rem_4rem_4.5rem_minmax(14rem,1.2fr)] gap-3 border-b border-zinc-200 bg-zinc-100 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+          <span>Player</span>
+          <span>Score</span>
+          <span>KDA</span>
+          <span>Damage</span>
+          <span>VS</span>
+          <span>CS</span>
+          <span>Gold</span>
+          <span>Build</span>
+        </div>
+
+        <div>
+          {team.participants.map((participant) => (
+            <ParticipantRow
+              gameAssets={gameAssets}
+              imageUrl={participant.championId ? participantImages[participant.championId] : undefined}
+              key={participant.participantId}
+              maxDamage={maxDamage}
+              onSelect={() => onParticipantSelect(participant.participantId)}
+              participant={participant}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -297,22 +319,24 @@ function TeamBlock({
 function ParticipantRow({
   gameAssets,
   imageUrl,
+  maxDamage,
   onSelect,
   participant,
 }: {
   gameAssets: Record<string, LeagueGameAssetView>;
   imageUrl: string | undefined;
+  maxDamage: number;
   onSelect: () => void;
   participant: PostMatchParticipant;
 }) {
   return (
     <button
-      className="grid gap-3 rounded-md border border-zinc-200 bg-white p-3 text-left transition hover:border-rose-200 hover:bg-rose-50 sm:grid-cols-[1fr_auto]"
+      className="grid min-w-[58rem] grid-cols-[minmax(15rem,1.6fr)_4.25rem_5.5rem_minmax(8rem,0.8fr)_4rem_4rem_4.5rem_minmax(14rem,1.2fr)] items-center gap-3 border-b border-zinc-100 px-3 py-2 text-left transition last:border-b-0 hover:bg-rose-50"
       onClick={onSelect}
       type="button"
     >
-      <div className="flex min-w-0 items-center gap-3">
-        <ChampionImage championName={participant.championName} imageUrl={imageUrl} />
+      <div className="flex min-w-0 items-center gap-2">
+        <ChampionImage championName={participant.championName} imageUrl={imageUrl} size="sm" />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-sm font-semibold text-zinc-950">{participant.displayName}</p>
@@ -327,41 +351,98 @@ function ParticipantRow({
           </p>
         </div>
       </div>
-      <div className="grid grid-cols-4 gap-2 text-xs text-zinc-600 sm:w-72">
-        <Stat label="KDA" value={`${participant.kills}/${participant.deaths}/${participant.assists}`} />
-        <Stat label="CS" value={String(participant.cs)} />
-        <Stat label="DMG" value={formatCompact(participant.damageToChampions)} />
-        <Stat label="VS" value={String(participant.visionScore)} />
-      </div>
-      <div className="grid gap-2 text-xs text-zinc-500 sm:col-span-2">
-        <AssetStrip assetIds={participant.items} assets={gameAssets} kind="item" label="Items" />
-        <AssetStrip assetIds={participant.runes} assets={gameAssets} kind="rune" label="Runes" />
-        <AssetStrip assetIds={participant.spells} assets={gameAssets} kind="spell" label="Spells" />
-      </div>
+      <ScoreBadge score={participant.performanceScore} />
+      <KdaCell participant={participant} />
+      <DamageCell damage={participant.damageToChampions} maxDamage={maxDamage} />
+      <span className="text-sm font-semibold text-zinc-700">{participant.visionScore}</span>
+      <span className="text-sm font-semibold text-zinc-700">{participant.cs}</span>
+      <span className="text-sm font-semibold text-zinc-700">{formatCompact(participant.goldEarned)}</span>
+      <BuildCell assets={gameAssets} participant={participant} />
     </button>
+  );
+}
+
+function ScoreBadge({ score }: { score: number }) {
+  const tone =
+    score >= 8
+      ? "bg-sky-100 text-sky-800"
+      : score >= 6.5
+        ? "bg-emerald-100 text-emerald-800"
+        : score >= 4.5
+          ? "bg-zinc-100 text-zinc-700"
+          : "bg-rose-100 text-rose-800";
+
+  return <span className={["w-fit rounded-md px-2 py-1 text-sm font-bold", tone].join(" ")}>{score.toFixed(1)}</span>;
+}
+
+function KdaCell({ participant }: { participant: PostMatchParticipant }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-sm font-semibold text-zinc-950">
+        {participant.kills}/{participant.deaths}/{participant.assists}
+      </p>
+      <p className="mt-0.5 text-xs text-zinc-500">{participant.kda === null ? "n/a" : `${participant.kda.toFixed(2)}:1`}</p>
+    </div>
+  );
+}
+
+function DamageCell({ damage, maxDamage }: { damage: number; maxDamage: number }) {
+  const width = Math.max(4, Math.round((damage / maxDamage) * 100));
+
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-zinc-950">{formatCompact(damage)}</span>
+        <span className="text-[11px] text-zinc-500">{width}%</span>
+      </div>
+      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-200">
+        <div className="h-full rounded-full bg-rose-500" style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function BuildCell({
+  assets,
+  participant,
+}: {
+  assets: Record<string, LeagueGameAssetView>;
+  participant: PostMatchParticipant;
+}) {
+  return (
+    <div className="grid gap-1">
+      <AssetStrip assetIds={participant.items} assets={assets} iconSize="md" kind="item" />
+      <div className="flex flex-wrap gap-1">
+        <AssetStrip assetIds={participant.runes} assets={assets} iconSize="sm" kind="rune" />
+        <AssetStrip assetIds={participant.spells} assets={assets} iconSize="sm" kind="spell" />
+      </div>
+    </div>
   );
 }
 
 function AssetStrip({
   assetIds,
   assets,
+  iconSize,
   kind,
-  label,
 }: {
   assetIds: number[];
   assets: Record<string, LeagueGameAssetView>;
+  iconSize: "sm" | "md";
   kind: LeagueGameAssetKind;
-  label: string;
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="w-12 shrink-0 text-zinc-500">{label}</span>
-      <div className="flex min-w-0 flex-wrap gap-1.5">
-        {assetIds.length === 0 && <span className="text-zinc-400">None</span>}
-        {assetIds.map((assetId, index) => (
-          <AssetIcon asset={assets[leagueGameAssetKey(kind, assetId)]} assetId={assetId} key={`${kind}-${assetId}-${index}`} kind={kind} />
-        ))}
-      </div>
+    <div className="flex min-w-0 flex-wrap gap-1">
+      {assetIds.length === 0 && kind === "item" && <span className="text-xs text-zinc-400">No items</span>}
+      {assetIds.map((assetId, index) => (
+        <AssetIcon
+          asset={assets[leagueGameAssetKey(kind, assetId)]}
+          assetId={assetId}
+          iconSize={iconSize}
+          key={`${kind}-${assetId}-${index}`}
+          kind={kind}
+        />
+      ))}
     </div>
   );
 }
@@ -369,20 +450,27 @@ function AssetStrip({
 function AssetIcon({
   asset,
   assetId,
+  iconSize,
   kind,
 }: {
   asset: LeagueGameAssetView | undefined;
   assetId: number;
+  iconSize: "sm" | "md";
   kind: LeagueGameAssetKind;
 }) {
   const label = asset?.name ?? `${assetLabel(kind)} ${assetId}`;
+  const title = asset?.description ? `${label}\n${asset.description}` : label;
+  const sizeClass = iconSize === "md" ? "h-7 w-7" : "h-5 w-5";
 
   return (
-    <span className="group relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-zinc-200 bg-zinc-100">
+    <span
+      className={["group relative inline-flex shrink-0 items-center justify-center rounded border border-zinc-200 bg-zinc-100", sizeClass].join(" ")}
+      title={title}
+    >
       {asset ? (
         <img alt={label} className="h-full w-full rounded object-cover" src={asset.imageUrl} />
       ) : (
-        <span className="text-[10px] font-semibold text-zinc-500">{assetId}</span>
+        <span className="text-[9px] font-semibold text-zinc-500">{assetId}</span>
       )}
       <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-72 -translate-x-1/2 rounded-md border border-zinc-800 bg-zinc-950 p-3 text-left text-xs text-white shadow-xl group-hover:block">
         <span className="block text-sm font-semibold">{label}</span>
@@ -522,13 +610,23 @@ function Leader({ label, leader }: { label: string; leader: ParticipantMetricLea
   );
 }
 
-function ChampionImage({ championName, imageUrl }: { championName: string; imageUrl: string | undefined }) {
+function ChampionImage({
+  championName,
+  imageUrl,
+  size = "md",
+}: {
+  championName: string;
+  imageUrl: string | undefined;
+  size?: "sm" | "md";
+}) {
+  const sizeClass = size === "sm" ? "h-9 w-9" : "h-12 w-12";
+
   if (imageUrl) {
-    return <img alt={`${championName} icon`} className="h-12 w-12 shrink-0 rounded-md border border-zinc-200 object-cover" src={imageUrl} />;
+    return <img alt={`${championName} icon`} className={`${sizeClass} shrink-0 rounded-md border border-zinc-200 object-cover`} src={imageUrl} />;
   }
 
   return (
-    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500">
+    <div className={`${sizeClass} flex shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500`}>
       {initials(championName)}
     </div>
   );
@@ -551,15 +649,6 @@ function Detail({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
       <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</p>
       <p className="mt-1 text-sm font-semibold text-zinc-950">{value}</p>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="font-semibold text-zinc-950">{value}</p>
-      <p className="mt-0.5 text-zinc-500">{label}</p>
     </div>
   );
 }
