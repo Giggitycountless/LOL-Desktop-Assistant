@@ -2,6 +2,8 @@ import { callBackend } from "./commands";
 import type {
   ClearPlayerNoteInput,
   ClearPlayerNoteResult,
+  LeagueGameAsset,
+  LeagueGameAssetKind,
   LeagueClientStatus,
   LeagueImageAsset,
   LeagueSelfSnapshot,
@@ -32,6 +34,12 @@ export function fetchLeagueProfileIcon(profileIconId: number): Promise<LeagueIma
 export function fetchLeagueChampionIcon(championId: number): Promise<LeagueImageAsset> {
   return callBackend<LeagueImageAsset>("get_league_champion_icon", {
     input: { championId },
+  });
+}
+
+export function fetchLeagueGameAsset(kind: LeagueGameAssetKind, assetId: number): Promise<LeagueGameAsset> {
+  return callBackend<LeagueGameAsset>("get_league_game_asset", {
+    input: { kind, assetId },
   });
 }
 

@@ -6,6 +6,7 @@ import { exportLocalData, importLocalData } from "../backend/dataTools";
 import {
   clearPlayerNote as clearPlayerNoteCommand,
   fetchLeagueChampionIcon,
+  fetchLeagueGameAsset,
   fetchLeagueProfileIcon,
   fetchLeagueSelfSnapshot,
   fetchPostMatchDetail,
@@ -20,6 +21,8 @@ import type {
   ActivityNoteInput,
   AppSnapshot,
   Feedback,
+  LeagueGameAsset,
+  LeagueGameAssetKind,
   LeagueImageAsset,
   LeagueSelfSnapshot,
   LeagueSelfSnapshotInput,
@@ -34,6 +37,11 @@ import type {
 type LeagueImageUrls = {
   profileIcons: Record<number, string>;
   championIcons: Record<number, string>;
+  gameAssets: Record<string, LeagueGameAssetView>;
+};
+
+export type LeagueGameAssetView = Omit<LeagueGameAsset, "image"> & {
+  imageUrl: string;
 };
 
 type AppStateContextValue = {
@@ -58,6 +66,7 @@ type AppStateContextValue = {
   importLocalData: (json: string) => Promise<boolean>;
   loadLeagueProfileIcon: (profileIconId: number | null | undefined) => Promise<boolean>;
   loadLeagueChampionIcon: (championId: number | null | undefined) => Promise<boolean>;
+  loadLeagueGameAsset: (kind: LeagueGameAssetKind, assetId: number | null | undefined) => Promise<boolean>;
   loadPostMatchDetail: (gameId: number) => Promise<boolean>;
   loadParticipantProfile: (input: ParticipantPublicProfileInput) => Promise<boolean>;
   savePlayerNote: (input: SavePlayerNoteInput) => Promise<PlayerNoteView | null>;
@@ -72,7 +81,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [leagueSelfSnapshot, setLeagueSelfSnapshot] = useState<LeagueSelfSnapshot | null>(null);
   const [postMatchDetails, setPostMatchDetails] = useState<Record<number, PostMatchDetail>>({});
   const [participantProfiles, setParticipantProfiles] = useState<Record<string, ParticipantPublicProfile>>({});
-  const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {} });
+  const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {}, gameAssets: {} });
   const pendingImageKeysRef = useRef(new Set<string>());
   const [leagueImages, setLeagueImages] = useState<LeagueImageUrls>(imageUrlsRef.current);
   const [isLoading, setIsLoading] = useState(true);
@@ -135,6 +144,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }
       for (const url of Object.values(imageUrlsRef.current.championIcons)) {
         URL.revokeObjectURL(url);
+      }
+      for (const asset of Object.values(imageUrlsRef.current.gameAssets)) {
+        URL.revokeObjectURL(asset.imageUrl);
       }
     };
   }, []);
@@ -279,6 +291,42 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const loadLeagueGameAssetAction = useCallback(async (kind: LeagueGameAssetKind, assetId: number | null | undefined) => {
+    if (!assetId) {
+      return true;
+    }
+
+    const key = leagueGameAssetKey(kind, assetId);
+    if (imageUrlsRef.current.gameAssets[key] || pendingImageKeysRef.current.has(key)) {
+      return true;
+    }
+
+    pendingImageKeysRef.current.add(key);
+    try {
+      const asset = await fetchLeagueGameAsset(kind, assetId);
+      const imageUrl = imageAssetUrl(asset.image);
+      imageUrlsRef.current = {
+        ...imageUrlsRef.current,
+        gameAssets: {
+          ...imageUrlsRef.current.gameAssets,
+          [key]: {
+            kind: asset.kind,
+            assetId: asset.assetId,
+            name: asset.name,
+            description: asset.description,
+            imageUrl,
+          },
+        },
+      };
+      setLeagueImages(imageUrlsRef.current);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      pendingImageKeysRef.current.delete(key);
+    }
+  }, []);
+
   const loadPostMatchDetailAction = useCallback(async (gameId: number) => {
     try {
       const detail = await fetchPostMatchDetail(gameId);
@@ -350,6 +398,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       importLocalData: importLocalDataAction,
       loadLeagueProfileIcon: loadLeagueProfileIconAction,
       loadLeagueChampionIcon: loadLeagueChampionIconAction,
+      loadLeagueGameAsset: loadLeagueGameAssetAction,
       loadPostMatchDetail: loadPostMatchDetailAction,
       loadParticipantProfile: loadParticipantProfileAction,
       savePlayerNote: savePlayerNoteAction,
@@ -369,6 +418,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       leagueImages,
       leagueSelfSnapshot,
       loadLeagueChampionIconAction,
+      loadLeagueGameAssetAction,
       loadActivityEntriesAction,
       loadLeagueProfileIconAction,
       loadParticipantProfileAction,
@@ -410,4 +460,8 @@ function imageAssetUrl(asset: LeagueImageAsset) {
 
 function participantProfileKey(gameId: number, participantId: number) {
   return `${gameId}:${participantId}`;
+}
+
+export function leagueGameAssetKey(kind: LeagueGameAssetKind, assetId: number) {
+  return `${kind}:${assetId}`;
 }

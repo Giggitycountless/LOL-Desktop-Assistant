@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
-import { useAppState } from "../state/AppStateProvider";
+import { leagueGameAssetKey, useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type {
+  LeagueGameAssetKind,
   MatchResult,
   ParticipantMetricLeader,
   ParticipantPublicProfile,
@@ -23,6 +24,7 @@ export function Matches() {
     postMatchDetails,
     participantProfiles,
     isLeagueClientLoading,
+    loadLeagueGameAsset,
     loadLeagueChampionIcon,
     loadLeagueProfileIcon,
     loadParticipantProfile,
@@ -55,10 +57,19 @@ export function Matches() {
       for (const team of detail.teams) {
         for (const participant of team.participants) {
           void loadLeagueChampionIcon(participant.championId);
+          for (const itemId of participant.items) {
+            void loadLeagueGameAsset("item", itemId);
+          }
+          for (const runeId of participant.runes) {
+            void loadLeagueGameAsset("rune", runeId);
+          }
+          for (const spellId of participant.spells) {
+            void loadLeagueGameAsset("spell", spellId);
+          }
         }
       }
     }
-  }, [loadLeagueChampionIcon, postMatchDetails]);
+  }, [loadLeagueChampionIcon, loadLeagueGameAsset, postMatchDetails]);
 
   useEffect(() => {
     if (selectedParticipant) {
@@ -116,6 +127,7 @@ export function Matches() {
                     match={match}
                     onParticipantSelect={(participantId) => setSelectedParticipant({ gameId: match.gameId, participantId })}
                     onToggle={() => setExpandedGameId(expandedGameId === match.gameId ? null : match.gameId)}
+                    gameAssets={leagueImages.gameAssets}
                     participantImages={leagueImages.championIcons}
                   />
                 );
@@ -143,6 +155,7 @@ function MatchCard({
   match,
   onParticipantSelect,
   onToggle,
+  gameAssets,
   participantImages,
 }: {
   detail: PostMatchDetail | undefined;
@@ -151,6 +164,7 @@ function MatchCard({
   match: RecentMatchSummary;
   onParticipantSelect: (participantId: number) => void;
   onToggle: () => void;
+  gameAssets: Record<string, LeagueGameAssetView>;
   participantImages: Record<number, string>;
 }) {
   return (
@@ -192,7 +206,14 @@ function MatchCard({
             <Detail label="Match ID" value={String(match.gameId)} />
           </div>
           {!detail && <StatePanel title="Loading analysis" body="Reading completed match details from local history" />}
-          {detail && <PostMatchAnalysis detail={detail} onParticipantSelect={onParticipantSelect} participantImages={participantImages} />}
+          {detail && (
+            <PostMatchAnalysis
+              detail={detail}
+              gameAssets={gameAssets}
+              onParticipantSelect={onParticipantSelect}
+              participantImages={participantImages}
+            />
+          )}
         </div>
       )}
     </div>
@@ -201,10 +222,12 @@ function MatchCard({
 
 function PostMatchAnalysis({
   detail,
+  gameAssets,
   onParticipantSelect,
   participantImages,
 }: {
   detail: PostMatchDetail;
+  gameAssets: Record<string, LeagueGameAssetView>;
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
 }) {
@@ -214,6 +237,7 @@ function PostMatchAnalysis({
       <div className="grid gap-4 xl:grid-cols-2">
         {detail.teams.map((team) => (
           <TeamBlock
+            gameAssets={gameAssets}
             key={team.teamId}
             onParticipantSelect={onParticipantSelect}
             participantImages={participantImages}
@@ -233,10 +257,12 @@ function PostMatchAnalysis({
 }
 
 function TeamBlock({
+  gameAssets,
   onParticipantSelect,
   participantImages,
   team,
 }: {
+  gameAssets: Record<string, LeagueGameAssetView>;
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
   team: PostMatchTeam;
@@ -256,6 +282,7 @@ function TeamBlock({
       <div className="mt-3 grid gap-2">
         {team.participants.map((participant) => (
           <ParticipantRow
+            gameAssets={gameAssets}
             imageUrl={participant.championId ? participantImages[participant.championId] : undefined}
             key={participant.participantId}
             onSelect={() => onParticipantSelect(participant.participantId)}
@@ -268,10 +295,12 @@ function TeamBlock({
 }
 
 function ParticipantRow({
+  gameAssets,
   imageUrl,
   onSelect,
   participant,
 }: {
+  gameAssets: Record<string, LeagueGameAssetView>;
   imageUrl: string | undefined;
   onSelect: () => void;
   participant: PostMatchParticipant;
@@ -304,12 +333,62 @@ function ParticipantRow({
         <Stat label="DMG" value={formatCompact(participant.damageToChampions)} />
         <Stat label="VS" value={String(participant.visionScore)} />
       </div>
-      <div className="sm:col-span-2 grid gap-2 text-xs text-zinc-500 sm:grid-cols-3">
-        <p>Items: {formatIds(participant.items)}</p>
-        <p>Runes: {formatIds(participant.runes)}</p>
-        <p>Spells: {formatIds(participant.spells)}</p>
+      <div className="grid gap-2 text-xs text-zinc-500 sm:col-span-2">
+        <AssetStrip assetIds={participant.items} assets={gameAssets} kind="item" label="Items" />
+        <AssetStrip assetIds={participant.runes} assets={gameAssets} kind="rune" label="Runes" />
+        <AssetStrip assetIds={participant.spells} assets={gameAssets} kind="spell" label="Spells" />
       </div>
     </button>
+  );
+}
+
+function AssetStrip({
+  assetIds,
+  assets,
+  kind,
+  label,
+}: {
+  assetIds: number[];
+  assets: Record<string, LeagueGameAssetView>;
+  kind: LeagueGameAssetKind;
+  label: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="w-12 shrink-0 text-zinc-500">{label}</span>
+      <div className="flex min-w-0 flex-wrap gap-1.5">
+        {assetIds.length === 0 && <span className="text-zinc-400">None</span>}
+        {assetIds.map((assetId, index) => (
+          <AssetIcon asset={assets[leagueGameAssetKey(kind, assetId)]} assetId={assetId} key={`${kind}-${assetId}-${index}`} kind={kind} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AssetIcon({
+  asset,
+  assetId,
+  kind,
+}: {
+  asset: LeagueGameAssetView | undefined;
+  assetId: number;
+  kind: LeagueGameAssetKind;
+}) {
+  const label = asset?.name ?? `${assetLabel(kind)} ${assetId}`;
+
+  return (
+    <span className="group relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-zinc-200 bg-zinc-100">
+      {asset ? (
+        <img alt={label} className="h-full w-full rounded object-cover" src={asset.imageUrl} />
+      ) : (
+        <span className="text-[10px] font-semibold text-zinc-500">{assetId}</span>
+      )}
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-72 -translate-x-1/2 rounded-md border border-zinc-800 bg-zinc-950 p-3 text-left text-xs text-white shadow-xl group-hover:block">
+        <span className="block text-sm font-semibold">{label}</span>
+        <span className="mt-1 block text-zinc-300">{asset?.description ?? `${assetLabel(kind)} details are loading from local game data.`}</span>
+      </span>
+    </span>
   );
 }
 
@@ -614,12 +693,19 @@ function formatLeaderValue(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function formatIds(values: number[]) {
-  return values.length === 0 ? "none" : values.join(", ");
-}
-
 function participantProfileKey(gameId: number, participantId: number) {
   return `${gameId}:${participantId}`;
+}
+
+function assetLabel(kind: LeagueGameAssetKind) {
+  switch (kind) {
+    case "item":
+      return "Item";
+    case "rune":
+      return "Rune";
+    case "spell":
+      return "Spell";
+  }
 }
 
 function initials(value: string) {

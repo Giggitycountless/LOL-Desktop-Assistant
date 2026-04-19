@@ -147,6 +147,16 @@ export type LeagueImageAsset = {
   bytes: number[];
 };
 
+export type LeagueGameAssetKind = "item" | "rune" | "spell";
+
+export type LeagueGameAsset = {
+  kind: LeagueGameAssetKind;
+  assetId: number;
+  name: string;
+  description: string | null;
+  image: LeagueImageAsset;
+};
+
 export type PlayerNoteSummary = {
   hasNote: boolean;
   tags: string[];
