@@ -159,3 +159,130 @@ pub struct ImportLocalDataResult {
 pub struct ClearActivityResult {
     pub deleted_count: i64,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueClientStatus {
+    pub is_running: bool,
+    pub lockfile_found: bool,
+    pub connection: LeagueClientConnection,
+    pub phase: LeagueClientPhase,
+    pub message: Option<String>,
+}
+
+impl LeagueClientStatus {
+    pub fn unavailable(phase: LeagueClientPhase, message: impl Into<String>) -> Self {
+        Self {
+            is_running: false,
+            lockfile_found: false,
+            connection: LeagueClientConnection::Unavailable,
+            phase,
+            message: Some(message.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LeagueClientConnection {
+    Connected,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LeagueClientPhase {
+    NotRunning,
+    LockfileMissing,
+    Connecting,
+    Connected,
+    Unauthorized,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueSelfSnapshot {
+    pub status: LeagueClientStatus,
+    pub summoner: Option<CurrentSummonerProfile>,
+    pub ranked_queues: Vec<RankedQueueSummary>,
+    pub recent_matches: Vec<RecentMatchSummary>,
+    pub recent_performance: RecentPerformanceSummary,
+    pub refreshed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueSelfData {
+    pub status: LeagueClientStatus,
+    pub summoner: Option<CurrentSummonerProfile>,
+    pub ranked_queues: Vec<RankedQueueSummary>,
+    pub recent_matches: Vec<RecentMatchSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentSummonerProfile {
+    pub display_name: String,
+    pub summoner_level: i64,
+    pub profile_icon_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedQueueSummary {
+    pub queue: RankedQueue,
+    pub tier: Option<String>,
+    pub division: Option<String>,
+    pub league_points: Option<i64>,
+    pub wins: i64,
+    pub losses: i64,
+    pub is_ranked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RankedQueue {
+    SoloDuo,
+    Flex,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentMatchSummary {
+    pub game_id: i64,
+    pub champion_name: String,
+    pub queue_name: Option<String>,
+    pub result: MatchResult,
+    pub kills: i64,
+    pub deaths: i64,
+    pub assists: i64,
+    pub kda: Option<f64>,
+    pub played_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchResult {
+    Win,
+    Loss,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentPerformanceSummary {
+    pub match_count: usize,
+    pub average_kda: Option<f64>,
+    pub kda_tag: KdaTag,
+    pub recent_champions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KdaTag {
+    High,
+    Standard,
+    Unavailable,
+}

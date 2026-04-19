@@ -1,9 +1,14 @@
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, LocalActivityEntry, LocalDataExport, NewActivityEntry,
-    ServiceStatus, SettingsValues, StartupPage,
+    HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus, LeagueSelfData,
+    LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport, NewActivityEntry, RecentMatchSummary,
+    RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -12,6 +17,10 @@ const MAX_ACTIVITY_LIMIT: i64 = 500;
 const DEFAULT_ACTIVITY_LIMIT: i64 = 100;
 const MAX_ACTIVITY_TITLE_LEN: usize = 120;
 const MAX_ACTIVITY_BODY_LEN: usize = 4_000;
+const DEFAULT_MATCH_LIMIT: i64 = 6;
+const MAX_MATCH_LIMIT: i64 = 20;
+const PERFORMANCE_MATCH_COUNT: usize = 6;
+const HIGH_KDA_THRESHOLD: f64 = 9.0;
 
 pub trait AppStore {
     fn schema_version(&self) -> Result<i64, String>;
@@ -30,6 +39,28 @@ pub trait AppStore {
         activity_entries: Vec<LocalActivityEntry>,
     ) -> Result<ImportLocalDataResult, String>;
     fn clear_activity_entries(&self) -> Result<i64, String>;
+}
+
+pub trait LeagueClientReader {
+    fn status(&self) -> Result<LeagueClientStatus, LeagueClientReadError>;
+    fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeagueClientReadError {
+    ClientUnavailable(String),
+    ClientAccess(String),
+    Integration(String),
+}
+
+impl fmt::Display for LeagueClientReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ClientUnavailable(message)
+            | Self::ClientAccess(message)
+            | Self::Integration(message) => formatter.write_str(message),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,9 +88,17 @@ pub struct ActivityEntries {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeagueSelfSnapshotInput {
+    pub match_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplicationError {
     Validation(String),
     Storage(String),
+    ClientUnavailable(String),
+    ClientAccess(String),
+    Integration(String),
 }
 
 impl ApplicationError {
@@ -67,6 +106,9 @@ impl ApplicationError {
         match self {
             Self::Validation(_) => "validation",
             Self::Storage(_) => "storage",
+            Self::ClientUnavailable(_) => "clientUnavailable",
+            Self::ClientAccess(_) => "clientAccess",
+            Self::Integration(_) => "integration",
         }
     }
 }
@@ -74,12 +116,26 @@ impl ApplicationError {
 impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Validation(message) | Self::Storage(message) => formatter.write_str(message),
+            Self::Validation(message)
+            | Self::Storage(message)
+            | Self::ClientUnavailable(message)
+            | Self::ClientAccess(message)
+            | Self::Integration(message) => formatter.write_str(message),
         }
     }
 }
 
 impl Error for ApplicationError {}
+
+impl From<LeagueClientReadError> for ApplicationError {
+    fn from(error: LeagueClientReadError) -> Self {
+        match error {
+            LeagueClientReadError::ClientUnavailable(message) => Self::ClientUnavailable(message),
+            LeagueClientReadError::ClientAccess(message) => Self::ClientAccess(message),
+            LeagueClientReadError::Integration(message) => Self::Integration(message),
+        }
+    }
+}
 
 pub fn health_report(database_status: DatabaseStatus, schema_version: Option<i64>) -> HealthReport {
     let status = match database_status {
@@ -241,6 +297,31 @@ pub fn clear_activity_entries(
     Ok(ClearActivityResult { deleted_count })
 }
 
+pub fn get_league_client_status(
+    reader: &impl LeagueClientReader,
+) -> Result<LeagueClientStatus, ApplicationError> {
+    reader.status().map_err(ApplicationError::from)
+}
+
+pub fn get_league_self_snapshot(
+    reader: &impl LeagueClientReader,
+    input: LeagueSelfSnapshotInput,
+) -> Result<LeagueSelfSnapshot, ApplicationError> {
+    let match_limit = normalize_match_limit(input.match_limit.unwrap_or(DEFAULT_MATCH_LIMIT))?;
+    let data = reader
+        .self_data(match_limit)
+        .map_err(ApplicationError::from)?;
+
+    Ok(LeagueSelfSnapshot {
+        recent_performance: summarize_recent_performance(&data.recent_matches),
+        status: data.status,
+        summoner: data.summoner,
+        ranked_queues: data.ranked_queues,
+        recent_matches: data.recent_matches,
+        refreshed_at: unix_timestamp_seconds(),
+    })
+}
+
 fn validate_settings(input: SettingsInput) -> Result<SettingsValues, ApplicationError> {
     let startup_page = StartupPage::parse(input.startup_page.as_str()).ok_or_else(|| {
         ApplicationError::Validation("Startup page must be dashboard, activity, or settings".into())
@@ -269,6 +350,73 @@ fn normalize_activity_limit(limit: i64) -> Result<i64, ApplicationError> {
             "Activity limit must be between {MIN_ACTIVITY_LIMIT} and {MAX_ACTIVITY_LIMIT}"
         )))
     }
+}
+
+fn normalize_match_limit(limit: i64) -> Result<i64, ApplicationError> {
+    if (1..=MAX_MATCH_LIMIT).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(ApplicationError::Validation(format!(
+            "Match limit must be between 1 and {MAX_MATCH_LIMIT}"
+        )))
+    }
+}
+
+fn summarize_recent_performance(matches: &[RecentMatchSummary]) -> RecentPerformanceSummary {
+    let recent_matches = matches.iter().take(PERFORMANCE_MATCH_COUNT);
+    let mut total_kda = 0.0;
+    let mut match_count = 0;
+    let mut recent_champions = Vec::new();
+
+    for match_summary in recent_matches {
+        match_count += 1;
+        total_kda += calculate_kda(
+            match_summary.kills,
+            match_summary.deaths,
+            match_summary.assists,
+        );
+        recent_champions.push(match_summary.champion_name.clone());
+    }
+
+    let average_kda = if match_count == 0 {
+        None
+    } else {
+        Some(round_to_tenth(total_kda / match_count as f64))
+    };
+
+    let kda_tag = match average_kda {
+        Some(value) if value >= HIGH_KDA_THRESHOLD => KdaTag::High,
+        Some(_) => KdaTag::Standard,
+        None => KdaTag::Unavailable,
+    };
+
+    RecentPerformanceSummary {
+        match_count,
+        average_kda,
+        kda_tag,
+        recent_champions,
+    }
+}
+
+fn calculate_kda(kills: i64, deaths: i64, assists: i64) -> f64 {
+    let contribution = (kills + assists) as f64;
+
+    if deaths <= 0 {
+        contribution
+    } else {
+        contribution / deaths as f64
+    }
+}
+
+fn round_to_tenth(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn unix_timestamp_seconds() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 fn validate_activity_note(input: ActivityNoteInput) -> Result<NewActivityEntry, ApplicationError> {
@@ -339,6 +487,7 @@ fn validate_local_activity_entry(entry: &LocalActivityEntry) -> Result<(), Appli
 #[cfg(test)]
 mod tests {
     use super::*;
+    use domain::{LeagueClientConnection, LeagueClientPhase, MatchResult};
     use std::cell::RefCell;
 
     #[test]
@@ -481,6 +630,69 @@ mod tests {
         assert_eq!(*store.clear_count.borrow(), 1);
     }
 
+    #[test]
+    fn league_self_snapshot_defaults_to_six_matches_and_summarizes_performance() {
+        let reader = FakeLeagueClientReader::new((1..=7).map(high_kda_match).collect());
+
+        let result = get_league_self_snapshot(&reader, LeagueSelfSnapshotInput { match_limit: None })
+            .expect("league self snapshot");
+
+        assert_eq!(*reader.last_match_limit.borrow(), Some(6));
+        assert_eq!(result.recent_matches.len(), 6);
+        assert_eq!(result.recent_performance.match_count, 6);
+        assert_eq!(result.recent_performance.average_kda, Some(10.0));
+        assert_eq!(result.recent_performance.kda_tag, KdaTag::High);
+        assert_eq!(result.recent_performance.recent_champions.len(), 6);
+    }
+
+    #[test]
+    fn league_self_snapshot_rejects_invalid_match_limit() {
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        let result = get_league_self_snapshot(
+            &reader,
+            LeagueSelfSnapshotInput {
+                match_limit: Some(0),
+            },
+        );
+
+        assert!(matches!(result, Err(ApplicationError::Validation(_))));
+        assert_eq!(*reader.last_match_limit.borrow(), None);
+    }
+
+    #[test]
+    fn league_self_snapshot_handles_zero_death_matches() {
+        let reader = FakeLeagueClientReader::new(vec![sample_match(1, "Ahri", 7, 0, 5)]);
+
+        let result = get_league_self_snapshot(
+            &reader,
+            LeagueSelfSnapshotInput {
+                match_limit: Some(1),
+            },
+        )
+        .expect("league self snapshot");
+
+        assert_eq!(result.recent_performance.average_kda, Some(12.0));
+        assert_eq!(result.recent_performance.kda_tag, KdaTag::High);
+    }
+
+    #[test]
+    fn league_client_error_codes_are_stable() {
+        let unavailable = ApplicationError::from(LeagueClientReadError::ClientUnavailable(
+            "League Client is not running".to_string(),
+        ));
+        let access = ApplicationError::from(LeagueClientReadError::ClientAccess(
+            "League Client rejected local authentication".to_string(),
+        ));
+        let integration = ApplicationError::from(LeagueClientReadError::Integration(
+            "League Client returned an unexpected response".to_string(),
+        ));
+
+        assert_eq!(unavailable.code(), "clientUnavailable");
+        assert_eq!(access.code(), "clientAccess");
+        assert_eq!(integration.code(), "integration");
+    }
+
     struct FakeStore {
         settings: RefCell<AppSettings>,
         activity_entries: RefCell<Vec<ActivityEntry>>,
@@ -600,6 +812,82 @@ mod tests {
             title: format!("Activity {id}"),
             body: None,
             created_at: "2026-04-18 00:00:00".to_string(),
+        }
+    }
+
+    struct FakeLeagueClientReader {
+        data: LeagueSelfData,
+        last_match_limit: RefCell<Option<i64>>,
+    }
+
+    impl FakeLeagueClientReader {
+        fn new(recent_matches: Vec<RecentMatchSummary>) -> Self {
+            Self {
+                data: LeagueSelfData {
+                    status: connected_status(),
+                    summoner: None,
+                    ranked_queues: Vec::new(),
+                    recent_matches,
+                },
+                last_match_limit: RefCell::new(None),
+            }
+        }
+    }
+
+    impl LeagueClientReader for FakeLeagueClientReader {
+        fn status(&self) -> Result<LeagueClientStatus, LeagueClientReadError> {
+            Ok(self.data.status.clone())
+        }
+
+        fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError> {
+            self.last_match_limit.replace(Some(match_limit));
+
+            Ok(LeagueSelfData {
+                status: self.data.status.clone(),
+                summoner: self.data.summoner.clone(),
+                ranked_queues: self.data.ranked_queues.clone(),
+                recent_matches: self
+                    .data
+                    .recent_matches
+                    .iter()
+                    .take(match_limit as usize)
+                    .cloned()
+                    .collect(),
+            })
+        }
+    }
+
+    fn connected_status() -> LeagueClientStatus {
+        LeagueClientStatus {
+            is_running: true,
+            lockfile_found: true,
+            connection: LeagueClientConnection::Connected,
+            phase: LeagueClientPhase::Connected,
+            message: None,
+        }
+    }
+
+    fn high_kda_match(id: i64) -> RecentMatchSummary {
+        sample_match(id, format!("Champion {id}").as_str(), 6, 1, 4)
+    }
+
+    fn sample_match(
+        game_id: i64,
+        champion_name: &str,
+        kills: i64,
+        deaths: i64,
+        assists: i64,
+    ) -> RecentMatchSummary {
+        RecentMatchSummary {
+            game_id,
+            champion_name: champion_name.to_string(),
+            queue_name: Some("Ranked Solo/Duo".to_string()),
+            result: MatchResult::Win,
+            kills,
+            deaths,
+            assists,
+            kda: None,
+            played_at: Some("2026-04-19T12:00:00Z".to_string()),
         }
     }
 }
