@@ -2,6 +2,7 @@ import { useAppState } from "../state/AppStateProvider";
 import type {
   KdaTag,
   LeagueClientStatus,
+  LeagueDataWarning,
   LeagueSelfSnapshot,
   RankedQueue,
   RankedQueueSummary,
@@ -88,17 +89,17 @@ function LeagueClientPanel({
   onRefresh: () => void;
 }) {
   const status = league?.status;
-  const isConnected = status?.connection === "connected";
   const soloDuo = league?.rankedQueues.find((queue) => queue.queue === "soloDuo");
   const flex = league?.rankedQueues.find((queue) => queue.queue === "flex");
   const performance = league?.recentPerformance;
+  const warnings = league?.dataWarnings ?? [];
 
   return (
     <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-base font-semibold text-zinc-950">League Client</h2>
-          <p className="mt-1 text-sm text-zinc-500">{status?.message ?? (isConnected ? "Local read-only connection ready" : "Checking local client")}</p>
+          <p className="mt-1 text-sm text-zinc-500">{leagueStatusMessage(status, isLoading, league !== null)}</p>
         </div>
         <div className="flex items-center gap-2">
           <LeagueStatusBadge status={status} isLoading={isLoading} />
@@ -116,9 +117,11 @@ function LeagueClientPanel({
 
       <div className="mt-5 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
         <div className="grid gap-4">
+          {warnings.length > 0 && <WarningList warnings={warnings} />}
+
           <div className="grid gap-3 sm:grid-cols-3">
-            <Metric label="Summoner" value={league?.summoner?.displayName ?? (isConnected ? "Unavailable" : "Not connected")} />
-            <Metric label="Level" value={league?.summoner ? String(league.summoner.summonerLevel) : "Pending"} />
+            <Metric label="Summoner" value={summonerLabel(league, isLoading)} />
+            <Metric label="Level" value={league?.summoner ? String(league.summoner.summonerLevel) : isLoading ? "Loading" : "Unavailable"} />
             <Metric label="Updated" value={formatTimestamp(league?.refreshedAt)} />
           </div>
 
@@ -131,7 +134,7 @@ function LeagueClientPanel({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-zinc-950">Recent 6 Performance</p>
-                <p className="mt-1 text-xs text-zinc-500">{performance?.matchCount ?? 0} matches included</p>
+                <p className="mt-1 text-xs text-zinc-500">{performanceLabel(league, isLoading)}</p>
               </div>
               <KdaBadge tag={performance?.kdaTag ?? "unavailable"} value={performance?.averageKda ?? null} />
             </div>
@@ -157,8 +160,10 @@ function LeagueClientPanel({
           </div>
 
           <div className="mt-4 grid gap-3">
-            {isLoading && !league && <p className="text-sm text-zinc-500">Loading League Client data</p>}
-            {!isLoading && (league?.recentMatches.length ?? 0) === 0 && <p className="text-sm text-zinc-500">No recent matches available</p>}
+            {isLoading && !league && <p className="text-sm text-zinc-500">Checking League Client data</p>}
+            {(!isLoading || league) && (league?.recentMatches.length ?? 0) === 0 && (
+              <p className="text-sm text-zinc-500">{recentMatchesEmptyLabel(league)}</p>
+            )}
             {league?.recentMatches.map((match) => (
               <MatchRow key={match.gameId} match={match} />
             ))}
@@ -170,18 +175,38 @@ function LeagueClientPanel({
 }
 
 function LeagueStatusBadge({ status, isLoading }: { status: LeagueClientStatus | undefined; isLoading: boolean }) {
-  const isReady = status?.connection === "connected";
-  const label = isLoading ? "Checking" : isReady ? "Connected" : formatLeaguePhase(status?.phase);
+  const isReady = status?.connection === "connected" && status.phase === "connected";
+  const isPartial = status?.phase === "partialData";
+  const label = isLoading ? (status ? "Refreshing" : "Checking") : isReady ? "Connected" : formatLeaguePhase(status?.phase);
 
   return (
     <div
       className={[
         "inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium",
-        isReady ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800",
+        isReady
+          ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+          : isPartial
+            ? "border-sky-200 bg-sky-50 text-sky-800"
+            : "border-amber-200 bg-amber-50 text-amber-800",
       ].join(" ")}
     >
-      <span className={["h-2.5 w-2.5 rounded-full", isReady ? "bg-emerald-600" : "bg-amber-500"].join(" ")} />
+      <span className={["h-2.5 w-2.5 rounded-full", isReady ? "bg-emerald-600" : isPartial ? "bg-sky-600" : "bg-amber-500"].join(" ")} />
       {label}
+    </div>
+  );
+}
+
+function WarningList({ warnings }: { warnings: LeagueDataWarning[] }) {
+  return (
+    <div className="rounded-md border border-sky-200 bg-sky-50 p-4">
+      <p className="text-sm font-semibold text-sky-950">Partial data</p>
+      <div className="mt-2 grid gap-1 text-sm text-sky-800">
+        {warnings.map((warning) => (
+          <p key={`${warning.section}-${warning.message}`}>
+            <span className="font-medium capitalize">{warning.section}</span>: {warning.message}
+          </p>
+        ))}
+      </div>
     </div>
   );
 }
@@ -192,7 +217,7 @@ function RankedQueueTile({ queue, summary }: { queue: RankedQueue; summary: Rank
       <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{queue === "soloDuo" ? "Solo/Duo" : "Flex"}</p>
       <p className="mt-2 text-lg font-semibold text-zinc-950">{formatRank(summary)}</p>
       <p className="mt-1 text-sm text-zinc-500">
-        {summary ? `${summary.wins}W ${summary.losses}L · ${formatWinRate(summary)}` : "No queue data"}
+        {summary ? `${summary.wins}W ${summary.losses}L - ${formatWinRate(summary)}` : "No queue data"}
       </p>
     </div>
   );
@@ -226,7 +251,7 @@ function MatchRow({ match }: { match: RecentMatchSummary }) {
           <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold capitalize", resultTone].join(" ")}>{match.result}</span>
         </div>
         <p className="mt-1 truncate text-xs text-zinc-500">
-          {match.queueName ?? "Unknown queue"} · {formatTimestamp(match.playedAt)}
+          {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt)}
         </p>
       </div>
       <div className="text-left sm:text-right">
@@ -297,6 +322,12 @@ function formatLeaguePhase(phase: LeagueClientStatus["phase"] | undefined) {
       return "No lockfile";
     case "unauthorized":
       return "Unauthorized";
+    case "notLoggedIn":
+      return "Not logged in";
+    case "patching":
+      return "Preparing";
+    case "partialData":
+      return "Partial data";
     case "unavailable":
       return "Unavailable";
     case "connecting":
@@ -314,7 +345,7 @@ function formatRank(summary: RankedQueueSummary | undefined) {
   }
 
   const division = summary.division ? ` ${summary.division}` : "";
-  const lp = summary.leaguePoints === null ? "" : ` · ${summary.leaguePoints} LP`;
+  const lp = summary.leaguePoints === null ? "" : ` - ${summary.leaguePoints} LP`;
 
   return `${summary.tier}${division}${lp}`;
 }
@@ -327,6 +358,78 @@ function formatWinRate(summary: RankedQueueSummary) {
   }
 
   return `${Math.round((summary.wins / total) * 100)}%`;
+}
+
+function leagueStatusMessage(status: LeagueClientStatus | undefined, isLoading: boolean, hasSnapshot: boolean) {
+  if (isLoading && !hasSnapshot) {
+    return "Checking local read-only League Client connection";
+  }
+
+  if (isLoading) {
+    return "Refreshing local read-only League Client data";
+  }
+
+  if (status?.message) {
+    return status.message;
+  }
+
+  if (status?.connection === "connected") {
+    return "Local read-only connection ready";
+  }
+
+  return "League Client data is unavailable";
+}
+
+function summonerLabel(league: LeagueSelfSnapshot | null, isLoading: boolean) {
+  if (league?.summoner) {
+    return league.summoner.displayName;
+  }
+
+  if (isLoading && !league) {
+    return "Loading";
+  }
+
+  if (league?.status.phase === "notLoggedIn") {
+    return "Not logged in";
+  }
+
+  return "Unavailable";
+}
+
+function performanceLabel(league: LeagueSelfSnapshot | null, isLoading: boolean) {
+  if (isLoading && !league) {
+    return "Checking matches";
+  }
+
+  if (league?.recentPerformance.matchCount) {
+    return `${league.recentPerformance.matchCount} matches included`;
+  }
+
+  if (league?.status.phase === "notLoggedIn") {
+    return "Login required";
+  }
+
+  return "No matches included";
+}
+
+function recentMatchesEmptyLabel(league: LeagueSelfSnapshot | null) {
+  if (!league) {
+    return "No League Client data loaded";
+  }
+
+  if (league.status.phase === "notLoggedIn") {
+    return "Login to the League Client to read recent matches";
+  }
+
+  if (league.dataWarnings.some((warning) => warning.section === "matches")) {
+    return "Recent matches are temporarily unavailable";
+  }
+
+  if (league.status.connection !== "connected") {
+    return "Connect to the League Client to read recent matches";
+  }
+
+  return "No recent matches available";
 }
 
 function formatTimestamp(value: string | null | undefined) {

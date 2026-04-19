@@ -9,7 +9,11 @@ export type LeagueClientPhase =
   | "connecting"
   | "connected"
   | "unauthorized"
+  | "notLoggedIn"
+  | "patching"
+  | "partialData"
   | "unavailable";
+export type LeagueDataSection = "champions" | "ranked" | "matches";
 export type RankedQueue = "soloDuo" | "flex" | "other";
 export type MatchResult = "win" | "loss" | "unknown";
 export type KdaTag = "high" | "standard" | "unavailable";
@@ -110,12 +114,18 @@ export type RecentPerformanceSummary = {
   recentChampions: string[];
 };
 
+export type LeagueDataWarning = {
+  section: LeagueDataSection;
+  message: string;
+};
+
 export type LeagueSelfSnapshot = {
   status: LeagueClientStatus;
   summoner: CurrentSummonerProfile | null;
   rankedQueues: RankedQueueSummary[];
   recentMatches: RecentMatchSummary[];
   recentPerformance: RecentPerformanceSummary;
+  dataWarnings: LeagueDataWarning[];
   refreshedAt: string;
 };
 
