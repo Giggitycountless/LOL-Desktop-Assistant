@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { ParticipantProfilePanel, type SelectedParticipant } from "../components/ParticipantProfilePanel";
 import { leagueGameAssetKey, useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
 import {
   isSelectedParticipant,
   openParticipantProfileWindow,
   PARTICIPANT_PROFILE_CHANGED_EVENT,
-  sameParticipant,
 } from "../windows/participantProfileWindow";
 import type {
   LeagueGameAssetKind,
@@ -19,6 +17,11 @@ import type {
   RecentMatchSummary,
 } from "../backend/types";
 
+type SelectedParticipant = {
+  gameId: number;
+  participantId: number;
+};
+
 export function Matches() {
   const {
     leagueSelfSnapshot,
@@ -27,12 +30,10 @@ export function Matches() {
     isLeagueClientLoading,
     loadLeagueGameAsset,
     loadLeagueChampionIcon,
-    loadParticipantProfile,
     loadPostMatchDetail,
     refreshLeagueClient,
   } = useAppState();
   const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
-  const [selectedParticipant, setSelectedParticipant] = useState<SelectedParticipant | null>(null);
   const matches = leagueSelfSnapshot?.recentMatches ?? [];
 
   useEffect(() => {
@@ -70,11 +71,10 @@ export function Matches() {
     let unlisten: (() => void) | undefined;
 
     void listen<unknown>(PARTICIPANT_PROFILE_CHANGED_EVENT, (event) => {
-      if (!isSelectedParticipant(event.payload) || !sameParticipant(selectedParticipant, event.payload)) {
+      if (!isSelectedParticipant(event.payload) || !postMatchDetails[event.payload.gameId]) {
         return;
       }
 
-      void loadParticipantProfile({ ...event.payload, recentLimit: 6 });
       void loadPostMatchDetail(event.payload.gameId);
     }).then((handler) => {
       unlisten = handler;
@@ -83,16 +83,15 @@ export function Matches() {
     return () => {
       unlisten?.();
     };
-  }, [loadParticipantProfile, loadPostMatchDetail, selectedParticipant]);
+  }, [loadPostMatchDetail, postMatchDetails]);
 
   function selectParticipant(selection: SelectedParticipant) {
-    setSelectedParticipant(selection);
     void openParticipantProfileWindow(selection);
   }
 
   return (
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
-      <div className="mx-auto grid w-full max-w-7xl gap-7 xl:grid-cols-[1fr_22rem]">
+      <div className="mx-auto w-full max-w-7xl">
         <div className="flex min-w-0 flex-col gap-7">
           <header className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -144,8 +143,6 @@ export function Matches() {
             </div>
           </section>
         </div>
-
-        <ParticipantProfilePanel selection={selectedParticipant} sticky />
       </div>
     </main>
   );
