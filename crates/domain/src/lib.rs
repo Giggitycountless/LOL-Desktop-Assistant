@@ -162,6 +162,29 @@ pub struct ClearActivityResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PlayerNoteSummary {
+    pub has_note: bool,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerNoteView {
+    pub game_id: i64,
+    pub participant_id: i64,
+    pub note: Option<String>,
+    pub tags: Vec<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearPlayerNoteResult {
+    pub cleared: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LeagueClientStatus {
     pub is_running: bool,
     pub lockfile_found: bool,

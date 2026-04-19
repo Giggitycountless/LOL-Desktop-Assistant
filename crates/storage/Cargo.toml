@@ -8,3 +8,4 @@ license.workspace = true
 application.workspace = true
 domain.workspace = true
 rusqlite.workspace = true
+serde_json.workspace = true

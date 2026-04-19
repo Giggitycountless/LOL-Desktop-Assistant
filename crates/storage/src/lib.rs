@@ -13,6 +13,7 @@ use rusqlite::{Connection, OptionalExtension};
 const DATABASE_FILE_NAME: &str = "app.sqlite";
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_state_foundation.sql");
+const MIGRATION_0003: &str = include_str!("../migrations/0003_player_notes.sql");
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -121,6 +122,37 @@ impl SqliteStore {
 
         Ok(deleted_count as i64)
     }
+
+    pub fn get_player_note(
+        &self,
+        player_puuid: &str,
+    ) -> StorageResult<Option<application::StoredPlayerNote>> {
+        let connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        read_player_note(&connection, player_puuid)
+    }
+
+    pub fn save_player_note(
+        &self,
+        note: &application::StoredPlayerNoteInput,
+    ) -> StorageResult<application::StoredPlayerNote> {
+        let connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+
+        write_player_note(&connection, note)?;
+        read_player_note(&connection, note.player_puuid.as_str())?.ok_or(StorageError::MissingPlayerNote)
+    }
+
+    pub fn clear_player_note(&self, player_puuid: &str) -> StorageResult<bool> {
+        let connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        let deleted_count = connection.execute(
+            "DELETE FROM player_notes WHERE player_puuid = ?1",
+            [player_puuid],
+        )?;
+
+        Ok(deleted_count > 0)
+    }
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -132,6 +164,8 @@ pub enum StorageError {
     InvalidActivityKind(String),
     InvalidStartupPage(String),
     MissingSchemaVersion,
+    MissingPlayerNote,
+    InvalidPlayerTags(String),
 }
 
 impl fmt::Display for StorageError {
@@ -142,6 +176,8 @@ impl fmt::Display for StorageError {
             Self::InvalidActivityKind(value) => write!(formatter, "invalid activity kind: {value}"),
             Self::InvalidStartupPage(value) => write!(formatter, "invalid startup page: {value}"),
             Self::MissingSchemaVersion => write!(formatter, "schema version metadata is missing"),
+            Self::MissingPlayerNote => write!(formatter, "player note is missing after save"),
+            Self::InvalidPlayerTags(error) => write!(formatter, "invalid player tags: {error}"),
         }
     }
 }
@@ -151,8 +187,11 @@ impl Error for StorageError {
         match self {
             Self::Io(error) => Some(error),
             Self::Sqlite(error) => Some(error),
-            Self::InvalidActivityKind(_) | Self::InvalidStartupPage(_) => None,
-            Self::MissingSchemaVersion => None,
+            Self::InvalidActivityKind(_)
+            | Self::InvalidStartupPage(_)
+            | Self::MissingSchemaVersion
+            | Self::MissingPlayerNote
+            | Self::InvalidPlayerTags(_) => None,
         }
     }
 }
@@ -195,6 +234,11 @@ fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
             version: 2,
             description: "state_foundation",
             sql: MIGRATION_0002,
+        },
+        Migration {
+            version: 3,
+            description: "player_notes",
+            sql: MIGRATION_0003,
         },
     ] {
         let migration_is_applied = transaction
@@ -413,6 +457,69 @@ fn read_activity_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityEntr
     })
 }
 
+fn read_player_note(
+    connection: &Connection,
+    player_puuid: &str,
+) -> StorageResult<Option<application::StoredPlayerNote>> {
+    connection
+        .query_row(
+            "SELECT player_puuid, last_display_name, note, tags_json, updated_at
+            FROM player_notes
+            WHERE player_puuid = ?1",
+            [player_puuid],
+            |row| {
+                let tags_json: String = row.get(3)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    tags_json,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .map(|(player_puuid, last_display_name, note, tags_json, updated_at)| {
+            let tags: Vec<String> = serde_json::from_str(tags_json.as_str())
+                .map_err(|error| StorageError::InvalidPlayerTags(error.to_string()))?;
+
+            Ok(application::StoredPlayerNote {
+                player_puuid,
+                last_display_name,
+                note,
+                tags,
+                updated_at,
+            })
+        })
+        .transpose()
+}
+
+fn write_player_note(
+    connection: &Connection,
+    note: &application::StoredPlayerNoteInput,
+) -> StorageResult<()> {
+    let tags_json = serde_json::to_string(&note.tags)
+        .map_err(|error| StorageError::InvalidPlayerTags(error.to_string()))?;
+
+    connection.execute(
+        "INSERT INTO player_notes (player_puuid, last_display_name, note, tags_json)
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT(player_puuid) DO UPDATE SET
+            last_display_name = excluded.last_display_name,
+            note = excluded.note,
+            tags_json = excluded.tags_json,
+            updated_at = CURRENT_TIMESTAMP",
+        (
+            note.player_puuid.as_str(),
+            note.last_display_name.as_str(),
+            note.note.as_deref(),
+            tags_json.as_str(),
+        ),
+    )?;
+
+    Ok(())
+}
+
 fn bool_to_int(value: bool) -> i64 {
     if value {
         1
@@ -468,6 +575,24 @@ impl application::AppStore for SqliteStore {
     fn clear_activity_entries(&self) -> Result<i64, String> {
         SqliteStore::clear_activity_entries(self).map_err(|error| error.to_string())
     }
+
+    fn get_player_note(
+        &self,
+        player_puuid: &str,
+    ) -> Result<Option<application::StoredPlayerNote>, String> {
+        SqliteStore::get_player_note(self, player_puuid).map_err(|error| error.to_string())
+    }
+
+    fn save_player_note(
+        &self,
+        note: application::StoredPlayerNoteInput,
+    ) -> Result<application::StoredPlayerNote, String> {
+        SqliteStore::save_player_note(self, &note).map_err(|error| error.to_string())
+    }
+
+    fn clear_player_note(&self, player_puuid: &str) -> Result<bool, String> {
+        SqliteStore::clear_player_note(self, player_puuid).map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -485,9 +610,9 @@ mod tests {
         let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
 
         assert!(store.database_path().exists());
-        assert_eq!(store.health().expect("storage health").schema_version, 2);
+        assert_eq!(store.health().expect("storage health").schema_version, 3);
         assert_eq!(store.get_settings().expect("settings").activity_limit, 100);
-        assert_eq!(migration_count(store.database_path()), 2);
+        assert_eq!(migration_count(store.database_path()), 3);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -500,8 +625,8 @@ mod tests {
         let second = SqliteStore::initialize(&data_dir).expect("second initialization");
 
         assert_eq!(first.database_path(), second.database_path());
-        assert_eq!(second.health().expect("storage health").schema_version, 2);
-        assert_eq!(migration_count(second.database_path()), 2);
+        assert_eq!(second.health().expect("storage health").schema_version, 3);
+        assert_eq!(migration_count(second.database_path()), 3);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -535,12 +660,12 @@ mod tests {
 
         let store = SqliteStore::initialize(&data_dir).expect("upgrade database");
 
-        assert_eq!(store.health().expect("storage health").schema_version, 2);
+        assert_eq!(store.health().expect("storage health").schema_version, 3);
         assert_eq!(
             store.get_settings().expect("settings").startup_page,
             StartupPage::Dashboard
         );
-        assert_eq!(migration_count(store.database_path()), 2);
+        assert_eq!(migration_count(store.database_path()), 3);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -678,6 +803,44 @@ mod tests {
             .list_all_activity_entries()
             .expect("all activity")
             .is_empty());
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn saves_updates_and_clears_player_notes() {
+        let data_dir = unique_temp_dir();
+        let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
+
+        let saved = store
+            .save_player_note(&application::StoredPlayerNoteInput {
+                player_puuid: "internal-puuid".to_string(),
+                last_display_name: "Visible Player".to_string(),
+                note: Some("Strong laner".to_string()),
+                tags: vec!["lane".to_string(), "carry".to_string()],
+            })
+            .expect("player note saves");
+        let updated = store
+            .save_player_note(&application::StoredPlayerNoteInput {
+                player_puuid: "internal-puuid".to_string(),
+                last_display_name: "Visible Player".to_string(),
+                note: None,
+                tags: vec!["calm".to_string()],
+            })
+            .expect("player note updates");
+        let cleared = store
+            .clear_player_note("internal-puuid")
+            .expect("player note clears");
+
+        assert_eq!(saved.note.as_deref(), Some("Strong laner"));
+        assert_eq!(saved.tags, vec!["lane", "carry"]);
+        assert_eq!(updated.note, None);
+        assert_eq!(updated.tags, vec!["calm"]);
+        assert!(cleared);
+        assert!(store
+            .get_player_note("internal-puuid")
+            .expect("player note reads")
+            .is_none());
 
         let _ = fs::remove_dir_all(data_dir);
     }

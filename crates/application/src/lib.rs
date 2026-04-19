@@ -6,10 +6,10 @@ use std::{
 
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus, LeagueImageAsset,
-    LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport, NewActivityEntry,
-    RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary, ServiceStatus,
-    SettingsValues, StartupPage,
+    ClearPlayerNoteResult, HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus,
+    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
+    NewActivityEntry, PlayerNoteSummary, PlayerNoteView, RecentChampionSummary,
+    RecentMatchSummary, RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -23,6 +23,9 @@ const MAX_MATCH_LIMIT: i64 = 20;
 const PERFORMANCE_MATCH_COUNT: usize = 6;
 const HIGH_KDA_THRESHOLD: f64 = 9.0;
 const MAX_LEAGUE_ASSET_ID: i64 = 1_000_000;
+const MAX_PLAYER_NOTE_LEN: usize = 1_000;
+const MAX_PLAYER_TAGS: usize = 8;
+const MAX_PLAYER_TAG_LEN: usize = 24;
 
 pub trait AppStore {
     fn schema_version(&self) -> Result<i64, String>;
@@ -41,6 +44,9 @@ pub trait AppStore {
         activity_entries: Vec<LocalActivityEntry>,
     ) -> Result<ImportLocalDataResult, String>;
     fn clear_activity_entries(&self) -> Result<i64, String>;
+    fn get_player_note(&self, player_puuid: &str) -> Result<Option<StoredPlayerNote>, String>;
+    fn save_player_note(&self, note: StoredPlayerNoteInput) -> Result<StoredPlayerNote, String>;
+    fn clear_player_note(&self, player_puuid: &str) -> Result<bool, String>;
 }
 
 pub trait LeagueClientReader {
@@ -105,6 +111,37 @@ pub struct LeagueProfileIconInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueChampionIconInput {
     pub champion_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavePlayerNoteInput {
+    pub game_id: i64,
+    pub participant_id: i64,
+    pub note: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearPlayerNoteInput {
+    pub game_id: i64,
+    pub participant_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlayerNote {
+    pub player_puuid: String,
+    pub last_display_name: String,
+    pub note: Option<String>,
+    pub tags: Vec<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPlayerNoteInput {
+    pub player_puuid: String,
+    pub last_display_name: String,
+    pub note: Option<String>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +397,88 @@ pub fn get_league_champion_icon(
         .map_err(ApplicationError::from)
 }
 
+pub fn save_player_note_for_resolved_player(
+    store: &impl AppStore,
+    input: SavePlayerNoteInput,
+    player_puuid: String,
+    display_name: String,
+) -> Result<PlayerNoteView, ApplicationError> {
+    validate_game_and_participant_ids(input.game_id, input.participant_id)?;
+    let note = normalize_player_note(input.note)?;
+    let tags = normalize_player_tags(input.tags)?;
+
+    let saved = store
+        .save_player_note(StoredPlayerNoteInput {
+            player_puuid,
+            last_display_name: display_name,
+            note,
+            tags,
+        })
+        .map_err(ApplicationError::Storage)?;
+
+    Ok(player_note_view(
+        input.game_id,
+        input.participant_id,
+        Some(saved),
+    ))
+}
+
+pub fn clear_player_note_for_resolved_player(
+    store: &impl AppStore,
+    input: ClearPlayerNoteInput,
+    player_puuid: &str,
+) -> Result<ClearPlayerNoteResult, ApplicationError> {
+    validate_game_and_participant_ids(input.game_id, input.participant_id)?;
+    let cleared = store
+        .clear_player_note(player_puuid)
+        .map_err(ApplicationError::Storage)?;
+
+    Ok(ClearPlayerNoteResult { cleared })
+}
+
+pub fn player_note_summary(
+    store: &impl AppStore,
+    player_puuid: Option<&str>,
+) -> Result<PlayerNoteSummary, ApplicationError> {
+    let Some(player_puuid) = player_puuid else {
+        return Ok(PlayerNoteSummary {
+            has_note: false,
+            tags: Vec::new(),
+        });
+    };
+    let note = store
+        .get_player_note(player_puuid)
+        .map_err(ApplicationError::Storage)?;
+
+    Ok(PlayerNoteSummary {
+        has_note: note.as_ref().is_some_and(|value| value.note.is_some()),
+        tags: note.map(|value| value.tags).unwrap_or_default(),
+    })
+}
+
+pub fn player_note_view(
+    game_id: i64,
+    participant_id: i64,
+    note: Option<StoredPlayerNote>,
+) -> PlayerNoteView {
+    match note {
+        Some(note) => PlayerNoteView {
+            game_id,
+            participant_id,
+            note: note.note,
+            tags: note.tags,
+            updated_at: Some(note.updated_at),
+        },
+        None => PlayerNoteView {
+            game_id,
+            participant_id,
+            note: None,
+            tags: Vec::new(),
+            updated_at: None,
+        },
+    }
+}
+
 fn validate_settings(input: SettingsInput) -> Result<SettingsValues, ApplicationError> {
     let startup_page = StartupPage::parse(input.startup_page.as_str()).ok_or_else(|| {
         ApplicationError::Validation("Startup page must be dashboard, activity, or settings".into())
@@ -408,6 +527,68 @@ fn normalize_league_asset_id(id: i64, label: &str) -> Result<i64, ApplicationErr
             "{label} must be between 1 and {MAX_LEAGUE_ASSET_ID}"
         )))
     }
+}
+
+fn validate_game_and_participant_ids(
+    game_id: i64,
+    participant_id: i64,
+) -> Result<(), ApplicationError> {
+    if game_id <= 0 {
+        return Err(ApplicationError::Validation(
+            "Game id must be greater than 0".to_string(),
+        ));
+    }
+
+    if participant_id <= 0 {
+        return Err(ApplicationError::Validation(
+            "Participant id must be greater than 0".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn normalize_player_note(note: Option<String>) -> Result<Option<String>, ApplicationError> {
+    let note = note
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if let Some(value) = &note {
+        if value.chars().count() > MAX_PLAYER_NOTE_LEN {
+            return Err(ApplicationError::Validation(format!(
+                "Player note must be {MAX_PLAYER_NOTE_LEN} characters or fewer"
+            )));
+        }
+    }
+
+    Ok(note)
+}
+
+fn normalize_player_tags(tags: Vec<String>) -> Result<Vec<String>, ApplicationError> {
+    let mut normalized = Vec::new();
+
+    for tag in tags {
+        let tag = tag.trim().to_string();
+        if tag.is_empty() || normalized.iter().any(|value| value == &tag) {
+            continue;
+        }
+
+        if tag.chars().count() > MAX_PLAYER_TAG_LEN {
+            return Err(ApplicationError::Validation(format!(
+                "Player tags must be {MAX_PLAYER_TAG_LEN} characters or fewer"
+            )));
+        }
+
+        normalized.push(tag);
+    }
+
+    if normalized.len() > MAX_PLAYER_TAGS {
+        return Err(ApplicationError::Validation(format!(
+            "Player tags must include {MAX_PLAYER_TAGS} entries or fewer"
+        )));
+    }
+
+    Ok(normalized)
 }
 
 fn summarize_recent_performance(matches: &[RecentMatchSummary]) -> RecentPerformanceSummary {
@@ -885,11 +1066,49 @@ mod tests {
         assert_eq!(result.bytes, vec![103]);
     }
 
+    #[test]
+    fn player_note_validation_trims_and_deduplicates() {
+        let store = FakeStore::new(default_settings());
+
+        let result = save_player_note_for_resolved_player(
+            &store,
+            SavePlayerNoteInput {
+                game_id: 10,
+                participant_id: 2,
+                note: Some("  Watch roams  ".to_string()),
+                tags: vec![
+                    " mid ".to_string(),
+                    "mid".to_string(),
+                    "shotcaller".to_string(),
+                ],
+            },
+            "internal-puuid".to_string(),
+            "Visible Player".to_string(),
+        )
+        .expect("player note saves");
+
+        assert_eq!(result.note.as_deref(), Some("Watch roams"));
+        assert_eq!(result.tags, vec!["mid", "shotcaller"]);
+        assert_eq!(result.game_id, 10);
+        assert_eq!(result.participant_id, 2);
+    }
+
+    #[test]
+    fn player_note_summary_does_not_require_puuid() {
+        let store = FakeStore::new(default_settings());
+
+        let summary = player_note_summary(&store, None).expect("summary reads");
+
+        assert!(!summary.has_note);
+        assert!(summary.tags.is_empty());
+    }
+
     struct FakeStore {
         settings: RefCell<AppSettings>,
         activity_entries: RefCell<Vec<ActivityEntry>>,
         created_entries: RefCell<Vec<NewActivityEntry>>,
         imported_entries: RefCell<Vec<LocalActivityEntry>>,
+        player_notes: RefCell<Vec<StoredPlayerNote>>,
         last_activity_query: RefCell<Option<(i64, Option<ActivityKind>)>>,
         import_count: RefCell<usize>,
         clear_count: RefCell<usize>,
@@ -902,6 +1121,7 @@ mod tests {
                 activity_entries: RefCell::new(Vec::new()),
                 created_entries: RefCell::new(Vec::new()),
                 imported_entries: RefCell::new(Vec::new()),
+                player_notes: RefCell::new(Vec::new()),
                 last_activity_query: RefCell::new(None),
                 import_count: RefCell::new(0),
                 clear_count: RefCell::new(0),
@@ -985,6 +1205,45 @@ mod tests {
             let deleted_count = self.activity_entries.borrow().len() as i64;
             self.activity_entries.borrow_mut().clear();
             Ok(deleted_count)
+        }
+
+        fn get_player_note(&self, player_puuid: &str) -> Result<Option<StoredPlayerNote>, String> {
+            Ok(self
+                .player_notes
+                .borrow()
+                .iter()
+                .find(|note| note.player_puuid == player_puuid)
+                .cloned())
+        }
+
+        fn save_player_note(&self, note: StoredPlayerNoteInput) -> Result<StoredPlayerNote, String> {
+            let saved = StoredPlayerNote {
+                player_puuid: note.player_puuid,
+                last_display_name: note.last_display_name,
+                note: note.note,
+                tags: note.tags,
+                updated_at: "2026-04-20 00:00:00".to_string(),
+            };
+            let mut notes = self.player_notes.borrow_mut();
+
+            if let Some(existing) = notes
+                .iter_mut()
+                .find(|note| note.player_puuid == saved.player_puuid)
+            {
+                *existing = saved.clone();
+            } else {
+                notes.push(saved.clone());
+            }
+
+            Ok(saved)
+        }
+
+        fn clear_player_note(&self, player_puuid: &str) -> Result<bool, String> {
+            let mut notes = self.player_notes.borrow_mut();
+            let before = notes.len();
+            notes.retain(|note| note.player_puuid != player_puuid);
+
+            Ok(before != notes.len())
         }
     }
 
