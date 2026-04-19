@@ -207,8 +207,8 @@ pub fn get_league_self_snapshot(
 mod tests {
     use super::*;
     use domain::{
-        ActivityKind, KdaTag, LeagueClientConnection, LeagueClientPhase, MatchResult,
-        RecentMatchSummary, RecentPerformanceSummary, StartupPage,
+        ActivityKind, KdaTag, LeagueClientConnection, LeagueClientPhase, LeagueDataSection,
+        LeagueDataWarning, MatchResult, RecentMatchSummary, RecentPerformanceSummary, StartupPage,
     };
     use serde_json::json;
     use std::{
@@ -372,15 +372,15 @@ mod tests {
             is_running: true,
             lockfile_found: true,
             connection: LeagueClientConnection::Connected,
-            phase: LeagueClientPhase::Connected,
-            message: None,
+            phase: LeagueClientPhase::PartialData,
+            message: Some("League Client connected with partial data".to_string()),
         })
         .expect("league status serializes");
 
         assert_eq!(value["isRunning"], true);
         assert_eq!(value["lockfileFound"], true);
         assert_eq!(value["connection"], "connected");
-        assert_eq!(value["phase"], "connected");
+        assert_eq!(value["phase"], "partialData");
         assert!(value.get("is_running").is_none());
     }
 
@@ -413,7 +413,10 @@ mod tests {
                 kda_tag: KdaTag::High,
                 recent_champions: vec!["Ahri".to_string()],
             },
-            data_warnings: Vec::new(),
+            data_warnings: vec![LeagueDataWarning {
+                section: LeagueDataSection::Ranked,
+                message: "Ranked data is temporarily unavailable".to_string(),
+            }],
             refreshed_at: "123".to_string(),
         })
         .expect("league snapshot serializes");
@@ -421,8 +424,10 @@ mod tests {
         assert_eq!(value["recentMatches"][0]["championName"], "Ahri");
         assert_eq!(value["recentPerformance"]["averageKda"], 15.0);
         assert_eq!(value["recentPerformance"]["kdaTag"], "high");
+        assert_eq!(value["dataWarnings"][0]["section"], "ranked");
         assert_eq!(value["refreshedAt"], "123");
         assert!(value.get("recent_matches").is_none());
+        assert!(value.get("data_warnings").is_none());
     }
 
     #[test]

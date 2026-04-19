@@ -488,7 +488,10 @@ fn validate_local_activity_entry(entry: &LocalActivityEntry) -> Result<(), Appli
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{LeagueClientConnection, LeagueClientPhase, MatchResult};
+    use domain::{
+        LeagueClientConnection, LeagueClientPhase, LeagueDataSection, LeagueDataWarning,
+        MatchResult,
+    };
     use std::cell::RefCell;
 
     #[test]
@@ -678,6 +681,84 @@ mod tests {
     }
 
     #[test]
+    fn league_self_snapshot_marks_empty_performance_unavailable() {
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        let result = get_league_self_snapshot(
+            &reader,
+            LeagueSelfSnapshotInput {
+                match_limit: Some(6),
+            },
+        )
+        .expect("league self snapshot");
+
+        assert_eq!(result.recent_performance.match_count, 0);
+        assert_eq!(result.recent_performance.average_kda, None);
+        assert_eq!(result.recent_performance.kda_tag, KdaTag::Unavailable);
+    }
+
+    #[test]
+    fn league_self_snapshot_preserves_unavailable_status() {
+        let reader = FakeLeagueClientReader::with_data(LeagueSelfData {
+            status: LeagueClientStatus {
+                is_running: false,
+                lockfile_found: false,
+                connection: LeagueClientConnection::Unavailable,
+                phase: LeagueClientPhase::NotRunning,
+                message: Some("League Client is not running".to_string()),
+            },
+            summoner: None,
+            ranked_queues: Vec::new(),
+            recent_matches: Vec::new(),
+            data_warnings: Vec::new(),
+        });
+
+        let result = get_league_self_snapshot(
+            &reader,
+            LeagueSelfSnapshotInput {
+                match_limit: Some(6),
+            },
+        )
+        .expect("league self snapshot");
+
+        assert_eq!(result.status.phase, LeagueClientPhase::NotRunning);
+        assert!(result.summoner.is_none());
+        assert!(result.data_warnings.is_empty());
+    }
+
+    #[test]
+    fn league_self_snapshot_accepts_partial_data_without_error() {
+        let reader = FakeLeagueClientReader::with_data(LeagueSelfData {
+            status: LeagueClientStatus {
+                is_running: true,
+                lockfile_found: true,
+                connection: LeagueClientConnection::Connected,
+                phase: LeagueClientPhase::PartialData,
+                message: Some("League Client connected with partial data".to_string()),
+            },
+            summoner: None,
+            ranked_queues: Vec::new(),
+            recent_matches: vec![sample_match(1, "Ahri", 1, 1, 1)],
+            data_warnings: vec![LeagueDataWarning {
+                section: LeagueDataSection::Ranked,
+                message: "Ranked data is temporarily unavailable".to_string(),
+            }],
+        });
+
+        let result = get_league_self_snapshot(
+            &reader,
+            LeagueSelfSnapshotInput {
+                match_limit: Some(6),
+            },
+        )
+        .expect("league self snapshot");
+
+        assert_eq!(result.status.phase, LeagueClientPhase::PartialData);
+        assert_eq!(result.data_warnings.len(), 1);
+        assert_eq!(result.data_warnings[0].section, LeagueDataSection::Ranked);
+    }
+
+    #[test]
     fn league_client_error_codes_are_stable() {
         let unavailable = ApplicationError::from(LeagueClientReadError::ClientUnavailable(
             "League Client is not running".to_string(),
@@ -823,14 +904,18 @@ mod tests {
 
     impl FakeLeagueClientReader {
         fn new(recent_matches: Vec<RecentMatchSummary>) -> Self {
+            Self::with_data(LeagueSelfData {
+                status: connected_status(),
+                summoner: None,
+                ranked_queues: Vec::new(),
+                recent_matches,
+                data_warnings: Vec::new(),
+            })
+        }
+
+        fn with_data(data: LeagueSelfData) -> Self {
             Self {
-                data: LeagueSelfData {
-                    status: connected_status(),
-                    summoner: None,
-                    ranked_queues: Vec::new(),
-                    recent_matches,
-                    data_warnings: Vec::new(),
-                },
+                data,
                 last_match_limit: RefCell::new(None),
             }
         }
