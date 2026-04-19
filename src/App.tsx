@@ -2,14 +2,18 @@ import { useEffect, useRef, useState } from "react";
 
 import { Activity } from "./pages/Activity";
 import { Dashboard } from "./pages/Dashboard";
+import { Matches } from "./pages/Matches";
+import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 import { AppStateProvider, useAppState } from "./state/AppStateProvider";
 import type { StartupPage } from "./backend/types";
 
-type Page = StartupPage;
+type Page = StartupPage | "profile" | "matches";
 
 const pages: Array<{ id: Page; label: string; icon: IconName }> = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
+  { id: "profile", label: "Profile", icon: "profile" },
+  { id: "matches", label: "Matches", icon: "matches" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -50,7 +54,7 @@ function AppShell() {
           {!compactMode && (
             <div className="ml-3 min-w-0">
               <p className="truncate text-sm font-semibold text-zinc-950">LoL Desktop Assistant</p>
-              <p className="text-xs font-medium text-zinc-500">Milestone 2</p>
+              <p className="text-xs font-medium text-zinc-500">Milestone 5</p>
             </div>
           )}
         </div>
@@ -104,6 +108,8 @@ function AppShell() {
           </div>
         )}
         {activePage === "dashboard" && <Dashboard />}
+        {activePage === "profile" && <Profile />}
+        {activePage === "matches" && <Matches />}
         {activePage === "activity" && <Activity />}
         {activePage === "settings" && <Settings />}
       </div>
@@ -111,11 +117,15 @@ function AppShell() {
   );
 }
 
-type IconName = "dashboard" | "activity" | "settings";
+type IconName = "dashboard" | "profile" | "matches" | "activity" | "settings";
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, string> = {
     dashboard: "M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-11h6V4h-6v5Z",
+    profile:
+      "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 8a8 8 0 0 1 16 0v1H4v-1Z",
+    matches:
+      "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 4v3h4V8H7Zm0 5v3h4v-3H7Zm6-5v2h4V8h-4Zm0 5v2h4v-2h-4Z",
     activity:
       "M5 4h14v2H5V4Zm0 4h9v2H5V8Zm0 4h14v2H5v-2Zm0 4h9v2H5v-2Zm12-8 4 4-4 4v-3h-5v-2h5V8Z",
     settings:

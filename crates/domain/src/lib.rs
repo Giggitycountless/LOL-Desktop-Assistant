@@ -232,6 +232,13 @@ pub struct LeagueDataWarning {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueImageAsset {
+    pub mime_type: String,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LeagueDataSection {
@@ -272,6 +279,7 @@ pub enum RankedQueue {
 #[serde(rename_all = "camelCase")]
 pub struct RecentMatchSummary {
     pub game_id: i64,
+    pub champion_id: Option<i64>,
     pub champion_name: String,
     pub queue_name: Option<String>,
     pub result: MatchResult,
@@ -280,6 +288,7 @@ pub struct RecentMatchSummary {
     pub assists: i64,
     pub kda: Option<f64>,
     pub played_at: Option<String>,
+    pub game_duration_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -297,6 +306,15 @@ pub struct RecentPerformanceSummary {
     pub average_kda: Option<f64>,
     pub kda_tag: KdaTag,
     pub recent_champions: Vec<String>,
+    pub top_champions: Vec<RecentChampionSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentChampionSummary {
+    pub champion_id: Option<i64>,
+    pub champion_name: String,
+    pub games: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -97,6 +97,7 @@ export type RankedQueueSummary = {
 
 export type RecentMatchSummary = {
   gameId: number;
+  championId: number | null;
   championName: string;
   queueName: string | null;
   result: MatchResult;
@@ -105,6 +106,13 @@ export type RecentMatchSummary = {
   assists: number;
   kda: number | null;
   playedAt: string | null;
+  gameDurationSeconds: number | null;
+};
+
+export type RecentChampionSummary = {
+  championId: number | null;
+  championName: string;
+  games: number;
 };
 
 export type RecentPerformanceSummary = {
@@ -112,6 +120,7 @@ export type RecentPerformanceSummary = {
   averageKda: number | null;
   kdaTag: KdaTag;
   recentChampions: string[];
+  topChampions: RecentChampionSummary[];
 };
 
 export type LeagueDataWarning = {
@@ -131,6 +140,11 @@ export type LeagueSelfSnapshot = {
 
 export type LeagueSelfSnapshotInput = {
   matchLimit?: number;
+};
+
+export type LeagueImageAsset = {
+  mimeType: string;
+  bytes: number[];
 };
 
 export type LocalDataExport = {

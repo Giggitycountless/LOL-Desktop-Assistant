@@ -2,12 +2,13 @@ use std::{error::Error, path::Path};
 
 use adapters::LocalLeagueClient;
 use application::{
-    ActivityListInput, ActivityNoteInput, ApplicationError, LeagueSelfSnapshotInput, SettingsInput,
+    ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
+    LeagueProfileIconInput, LeagueSelfSnapshotInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, LeagueClientStatus, LeagueSelfSnapshot, LocalDataExport,
-    SettingsValues,
+    HealthReport, ImportLocalDataResult, LeagueClientStatus, LeagueImageAsset, LeagueSelfSnapshot,
+    LocalDataExport, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -72,6 +73,18 @@ pub struct ClearActivityEntriesCommand {
 #[serde(rename_all = "camelCase")]
 pub struct LeagueSelfSnapshotCommand {
     pub match_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueProfileIconCommand {
+    pub profile_icon_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueChampionIconCommand {
+    pub champion_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -198,6 +211,32 @@ pub fn get_league_self_snapshot(
         &state.league_client,
         LeagueSelfSnapshotInput {
             match_limit: command.match_limit,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
+pub fn get_league_profile_icon(
+    state: &AppState,
+    command: LeagueProfileIconCommand,
+) -> Result<LeagueImageAsset, CommandError> {
+    application::get_league_profile_icon(
+        &state.league_client,
+        LeagueProfileIconInput {
+            profile_icon_id: command.profile_icon_id,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
+pub fn get_league_champion_icon(
+    state: &AppState,
+    command: LeagueChampionIconCommand,
+) -> Result<LeagueImageAsset, CommandError> {
+    application::get_league_champion_icon(
+        &state.league_client,
+        LeagueChampionIconInput {
+            champion_id: command.champion_id,
         },
     )
     .map_err(CommandError::from)
@@ -367,6 +406,26 @@ mod tests {
     }
 
     #[test]
+    fn league_profile_icon_accepts_frontend_payload_shape() {
+        let command: LeagueProfileIconCommand = serde_json::from_value(json!({
+            "profileIconId": 29
+        }))
+        .expect("frontend-shaped profile icon command deserializes");
+
+        assert_eq!(command.profile_icon_id, 29);
+    }
+
+    #[test]
+    fn league_champion_icon_accepts_frontend_payload_shape() {
+        let command: LeagueChampionIconCommand = serde_json::from_value(json!({
+            "championId": 103
+        }))
+        .expect("frontend-shaped champion icon command deserializes");
+
+        assert_eq!(command.champion_id, 103);
+    }
+
+    #[test]
     fn league_status_serializes_frontend_shape() {
         let value = serde_json::to_value(LeagueClientStatus {
             is_running: true,
@@ -398,6 +457,7 @@ mod tests {
             ranked_queues: Vec::new(),
             recent_matches: vec![RecentMatchSummary {
                 game_id: 12,
+                champion_id: Some(103),
                 champion_name: "Ahri".to_string(),
                 queue_name: Some("Ranked Solo/Duo".to_string()),
                 result: MatchResult::Win,
@@ -406,12 +466,14 @@ mod tests {
                 assists: 8,
                 kda: Some(15.0),
                 played_at: Some("2026-04-19T12:00:00Z".to_string()),
+                game_duration_seconds: Some(1880),
             }],
             recent_performance: RecentPerformanceSummary {
                 match_count: 1,
                 average_kda: Some(15.0),
                 kda_tag: KdaTag::High,
                 recent_champions: vec!["Ahri".to_string()],
+                top_champions: Vec::new(),
             },
             data_warnings: vec![LeagueDataWarning {
                 section: LeagueDataSection::Ranked,
@@ -422,12 +484,29 @@ mod tests {
         .expect("league snapshot serializes");
 
         assert_eq!(value["recentMatches"][0]["championName"], "Ahri");
+        assert_eq!(value["recentMatches"][0]["championId"], 103);
+        assert_eq!(value["recentMatches"][0]["gameDurationSeconds"], 1880);
         assert_eq!(value["recentPerformance"]["averageKda"], 15.0);
         assert_eq!(value["recentPerformance"]["kdaTag"], "high");
         assert_eq!(value["dataWarnings"][0]["section"], "ranked");
         assert_eq!(value["refreshedAt"], "123");
         assert!(value.get("recent_matches").is_none());
         assert!(value.get("data_warnings").is_none());
+    }
+
+    #[test]
+    fn league_image_asset_serializes_without_lcu_url_fields() {
+        let value = serde_json::to_value(LeagueImageAsset {
+            mime_type: "image/png".to_string(),
+            bytes: vec![1, 2, 3],
+        })
+        .expect("image asset serializes");
+
+        assert_eq!(value["mimeType"], "image/png");
+        assert_eq!(value["bytes"], json!([1, 2, 3]));
+        assert!(value.get("url").is_none());
+        assert!(value.get("authorization").is_none());
+        assert!(value.get("password").is_none());
     }
 
     #[test]

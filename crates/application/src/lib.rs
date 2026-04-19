@@ -6,9 +6,10 @@ use std::{
 
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus, LeagueSelfData,
-    LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport, NewActivityEntry, RecentMatchSummary,
-    RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
+    HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus, LeagueImageAsset,
+    LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport, NewActivityEntry,
+    RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary, ServiceStatus,
+    SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -21,6 +22,7 @@ const DEFAULT_MATCH_LIMIT: i64 = 6;
 const MAX_MATCH_LIMIT: i64 = 20;
 const PERFORMANCE_MATCH_COUNT: usize = 6;
 const HIGH_KDA_THRESHOLD: f64 = 9.0;
+const MAX_LEAGUE_ASSET_ID: i64 = 1_000_000;
 
 pub trait AppStore {
     fn schema_version(&self) -> Result<i64, String>;
@@ -44,6 +46,9 @@ pub trait AppStore {
 pub trait LeagueClientReader {
     fn status(&self) -> Result<LeagueClientStatus, LeagueClientReadError>;
     fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError>;
+    fn profile_icon(&self, profile_icon_id: i64)
+        -> Result<LeagueImageAsset, LeagueClientReadError>;
+    fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +95,16 @@ pub struct ActivityEntries {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueSelfSnapshotInput {
     pub match_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeagueProfileIconInput {
+    pub profile_icon_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeagueChampionIconInput {
+    pub champion_id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +338,28 @@ pub fn get_league_self_snapshot(
     })
 }
 
+pub fn get_league_profile_icon(
+    reader: &impl LeagueClientReader,
+    input: LeagueProfileIconInput,
+) -> Result<LeagueImageAsset, ApplicationError> {
+    let profile_icon_id = normalize_league_asset_id(input.profile_icon_id, "Profile icon id")?;
+
+    reader
+        .profile_icon(profile_icon_id)
+        .map_err(ApplicationError::from)
+}
+
+pub fn get_league_champion_icon(
+    reader: &impl LeagueClientReader,
+    input: LeagueChampionIconInput,
+) -> Result<LeagueImageAsset, ApplicationError> {
+    let champion_id = normalize_league_asset_id(input.champion_id, "Champion id")?;
+
+    reader
+        .champion_icon(champion_id)
+        .map_err(ApplicationError::from)
+}
+
 fn validate_settings(input: SettingsInput) -> Result<SettingsValues, ApplicationError> {
     let startup_page = StartupPage::parse(input.startup_page.as_str()).ok_or_else(|| {
         ApplicationError::Validation("Startup page must be dashboard, activity, or settings".into())
@@ -363,6 +400,16 @@ fn normalize_match_limit(limit: i64) -> Result<i64, ApplicationError> {
     }
 }
 
+fn normalize_league_asset_id(id: i64, label: &str) -> Result<i64, ApplicationError> {
+    if (1..=MAX_LEAGUE_ASSET_ID).contains(&id) {
+        Ok(id)
+    } else {
+        Err(ApplicationError::Validation(format!(
+            "{label} must be between 1 and {MAX_LEAGUE_ASSET_ID}"
+        )))
+    }
+}
+
 fn summarize_recent_performance(matches: &[RecentMatchSummary]) -> RecentPerformanceSummary {
     let recent_matches = matches.iter().take(PERFORMANCE_MATCH_COUNT);
     let mut total_kda = 0.0;
@@ -396,7 +443,46 @@ fn summarize_recent_performance(matches: &[RecentMatchSummary]) -> RecentPerform
         average_kda,
         kda_tag,
         recent_champions,
+        top_champions: summarize_top_champions(matches),
     }
+}
+
+fn summarize_top_champions(matches: &[RecentMatchSummary]) -> Vec<RecentChampionSummary> {
+    let mut counts: Vec<(Option<i64>, String, usize, usize)> = Vec::new();
+
+    for (index, match_summary) in matches.iter().take(PERFORMANCE_MATCH_COUNT).enumerate() {
+        if let Some((_, _, games, _)) =
+            counts
+                .iter_mut()
+                .find(|(champion_id, champion_name, _, _)| {
+                    *champion_id == match_summary.champion_id
+                        && champion_name == &match_summary.champion_name
+                })
+        {
+            *games += 1;
+            continue;
+        }
+
+        counts.push((
+            match_summary.champion_id,
+            match_summary.champion_name.clone(),
+            1,
+            index,
+        ));
+    }
+
+    counts.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.3.cmp(&right.3)));
+    counts
+        .into_iter()
+        .take(3)
+        .map(
+            |(champion_id, champion_name, games, _)| RecentChampionSummary {
+                champion_id,
+                champion_name,
+                games,
+            },
+        )
+        .collect()
 }
 
 fn calculate_kda(kills: i64, deaths: i64, assists: i64) -> f64 {
@@ -638,8 +724,9 @@ mod tests {
     fn league_self_snapshot_defaults_to_six_matches_and_summarizes_performance() {
         let reader = FakeLeagueClientReader::new((1..=7).map(high_kda_match).collect());
 
-        let result = get_league_self_snapshot(&reader, LeagueSelfSnapshotInput { match_limit: None })
-            .expect("league self snapshot");
+        let result =
+            get_league_self_snapshot(&reader, LeagueSelfSnapshotInput { match_limit: None })
+                .expect("league self snapshot");
 
         assert_eq!(*reader.last_match_limit.borrow(), Some(6));
         assert_eq!(result.recent_matches.len(), 6);
@@ -647,6 +734,7 @@ mod tests {
         assert_eq!(result.recent_performance.average_kda, Some(10.0));
         assert_eq!(result.recent_performance.kda_tag, KdaTag::High);
         assert_eq!(result.recent_performance.recent_champions.len(), 6);
+        assert_eq!(result.recent_performance.top_champions.len(), 3);
     }
 
     #[test]
@@ -773,6 +861,28 @@ mod tests {
         assert_eq!(unavailable.code(), "clientUnavailable");
         assert_eq!(access.code(), "clientAccess");
         assert_eq!(integration.code(), "integration");
+    }
+
+    #[test]
+    fn league_profile_icon_validates_id_before_reader_call() {
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        let result =
+            get_league_profile_icon(&reader, LeagueProfileIconInput { profile_icon_id: 0 });
+
+        assert!(matches!(result, Err(ApplicationError::Validation(_))));
+    }
+
+    #[test]
+    fn league_champion_icon_returns_image_bytes() {
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        let result =
+            get_league_champion_icon(&reader, LeagueChampionIconInput { champion_id: 103 })
+                .expect("champion icon reads");
+
+        assert_eq!(result.mime_type, "image/png");
+        assert_eq!(result.bytes, vec![103]);
     }
 
     struct FakeStore {
@@ -943,6 +1053,26 @@ mod tests {
                 data_warnings: self.data.data_warnings.clone(),
             })
         }
+
+        fn profile_icon(
+            &self,
+            profile_icon_id: i64,
+        ) -> Result<LeagueImageAsset, LeagueClientReadError> {
+            Ok(LeagueImageAsset {
+                mime_type: "image/jpeg".to_string(),
+                bytes: vec![profile_icon_id as u8],
+            })
+        }
+
+        fn champion_icon(
+            &self,
+            champion_id: i64,
+        ) -> Result<LeagueImageAsset, LeagueClientReadError> {
+            Ok(LeagueImageAsset {
+                mime_type: "image/png".to_string(),
+                bytes: vec![champion_id as u8],
+            })
+        }
     }
 
     fn connected_status() -> LeagueClientStatus {
@@ -968,6 +1098,7 @@ mod tests {
     ) -> RecentMatchSummary {
         RecentMatchSummary {
             game_id,
+            champion_id: Some(game_id),
             champion_name: champion_name.to_string(),
             queue_name: Some("Ranked Solo/Duo".to_string()),
             result: MatchResult::Win,
@@ -976,6 +1107,7 @@ mod tests {
             assists,
             kda: None,
             played_at: Some("2026-04-19T12:00:00Z".to_string()),
+            game_duration_seconds: Some(1800),
         }
     }
 }

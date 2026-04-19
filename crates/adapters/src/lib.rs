@@ -1,18 +1,12 @@
-use std::{
-    collections::HashMap,
-    fmt,
-    fs,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::HashMap, fmt, fs, path::PathBuf, time::Duration};
 
 use application::{LeagueClientReadError, LeagueClientReader};
 use domain::{
     CurrentSummonerProfile, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
-    LeagueDataSection, LeagueDataWarning, LeagueSelfData, MatchResult, RankedQueue,
-    RankedQueueSummary, RecentMatchSummary,
+    LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData, MatchResult,
+    RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
-use reqwest::{blocking::Client, StatusCode};
+use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::Deserialize;
 use serde_json::Value;
 use sysinfo::{ProcessesToUpdate, System};
@@ -20,6 +14,8 @@ use sysinfo::{ProcessesToUpdate, System};
 const LOCAL_LCU_HOST: &str = "127.0.0.1";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const LEAGUE_CLIENT_PROCESSES: [&str; 2] = ["LeagueClientUx.exe", "LeagueClient.exe"];
+const PROFILE_ICON_MIME: &str = "image/jpeg";
+const CHAMPION_ICON_MIME: &str = "image/png";
 
 pub fn layer_name() -> &'static str {
     "adapters"
@@ -65,6 +61,37 @@ impl LocalLeagueClient {
         };
 
         build_self_data(session, summoner, match_limit)
+    }
+
+    fn read_profile_icon(
+        &self,
+        profile_icon_id: i64,
+    ) -> Result<LeagueImageAsset, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+
+        session
+            .get_image_asset(
+                profile_icon_path(profile_icon_id).as_str(),
+                PROFILE_ICON_MIME,
+            )
+            .map_err(read_error_from_request)
+    }
+
+    fn read_champion_icon(
+        &self,
+        champion_id: i64,
+    ) -> Result<LeagueImageAsset, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+
+        session
+            .get_image_asset(champion_icon_path(champion_id).as_str(), CHAMPION_ICON_MIME)
+            .map_err(read_error_from_request)
     }
 
     fn open_session(&self) -> SessionOpenResult {
@@ -173,6 +200,17 @@ impl LeagueClientReader for LocalLeagueClient {
     fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError> {
         Ok(self.read_self_data(match_limit))
     }
+
+    fn profile_icon(
+        &self,
+        profile_icon_id: i64,
+    ) -> Result<LeagueImageAsset, LeagueClientReadError> {
+        self.read_profile_icon(profile_icon_id)
+    }
+
+    fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError> {
+        self.read_champion_icon(champion_id)
+    }
 }
 
 enum SessionOpenResult {
@@ -265,10 +303,7 @@ impl LcuSession {
     }
 
     fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, LcuRequestError> {
-        let url = format!(
-            "https://{LOCAL_LCU_HOST}:{}{}",
-            self.credentials.port, path
-        );
+        let url = format!("https://{LOCAL_LCU_HOST}:{}{}", self.credentials.port, path);
         let response = self
             .http_client
             .get(url)
@@ -293,7 +328,58 @@ impl LcuSession {
             return Err(LcuRequestError::Unavailable);
         }
 
-        response.json::<T>().map_err(|_| LcuRequestError::Unexpected)
+        response
+            .json::<T>()
+            .map_err(|_| LcuRequestError::Unexpected)
+    }
+
+    fn get_image_asset(
+        &self,
+        path: &str,
+        fallback_mime_type: &str,
+    ) -> Result<LeagueImageAsset, LcuRequestError> {
+        let url = format!("https://{LOCAL_LCU_HOST}:{}{}", self.credentials.port, path);
+        let response = self
+            .http_client
+            .get(url)
+            .basic_auth("riot", Some(self.credentials.password.as_str()))
+            .send()
+            .map_err(|_| LcuRequestError::Unavailable)?;
+        let status = response.status();
+
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return Err(LcuRequestError::Unauthorized);
+        }
+
+        if status == StatusCode::NOT_FOUND {
+            return Err(LcuRequestError::NotLoggedIn);
+        }
+
+        if status == StatusCode::SERVICE_UNAVAILABLE {
+            return Err(LcuRequestError::Patching);
+        }
+
+        if !status.is_success() {
+            return Err(LcuRequestError::Unavailable);
+        }
+
+        let mime_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| value.starts_with("image/"))
+            .unwrap_or(fallback_mime_type)
+            .to_string();
+        let bytes = response
+            .bytes()
+            .map_err(|_| LcuRequestError::Unexpected)?
+            .to_vec();
+
+        if bytes.is_empty() {
+            return Err(LcuRequestError::Unexpected);
+        }
+
+        Ok(LeagueImageAsset { mime_type, bytes })
     }
 }
 
@@ -378,6 +464,31 @@ fn status_from_request_error(error: LcuRequestError) -> LeagueClientStatus {
     }
 }
 
+fn read_error_from_status(status: LeagueClientStatus) -> LeagueClientReadError {
+    let message = status
+        .message
+        .unwrap_or_else(|| "League Client data is unavailable".to_string());
+
+    match status.phase {
+        LeagueClientPhase::Unauthorized => LeagueClientReadError::ClientAccess(message),
+        LeagueClientPhase::Connected | LeagueClientPhase::PartialData => {
+            LeagueClientReadError::Integration(message)
+        }
+        LeagueClientPhase::NotRunning
+        | LeagueClientPhase::LockfileMissing
+        | LeagueClientPhase::Connecting
+        | LeagueClientPhase::NotLoggedIn
+        | LeagueClientPhase::Patching
+        | LeagueClientPhase::Unavailable => LeagueClientReadError::ClientUnavailable(message),
+    }
+}
+
+fn read_error_from_request(error: LcuRequestError) -> LeagueClientReadError {
+    let status = status_from_request_error(error);
+
+    read_error_from_status(status)
+}
+
 fn empty_self_data(status: LeagueClientStatus) -> LeagueSelfData {
     LeagueSelfData {
         status,
@@ -389,15 +500,20 @@ fn empty_self_data(status: LeagueClientStatus) -> LeagueSelfData {
 }
 
 fn build_self_data(session: LcuSession, summoner: LcuSummoner, match_limit: i64) -> LeagueSelfData {
-    let champion_names_result =
-        session.get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json");
+    let champion_names_result = session
+        .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json");
     let ranked_result = session.get_json::<LcuRankedStats>("/lol-ranked/v1/current-ranked-stats");
     let matches_path = format!(
         "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={match_limit}"
     );
     let matches_result = session.get_json::<LcuMatchHistoryResponse>(matches_path.as_str());
 
-    compose_self_data(summoner, champion_names_result, ranked_result, matches_result)
+    compose_self_data(
+        summoner,
+        champion_names_result,
+        ranked_result,
+        matches_result,
+    )
 }
 
 fn compose_self_data(
@@ -474,7 +590,9 @@ fn section_error_message(section_name: &str, error: LcuRequestError) -> String {
     match error {
         LcuRequestError::Unauthorized => format!("{section_name} could not be read"),
         LcuRequestError::NotLoggedIn => format!("{section_name} is unavailable before login"),
-        LcuRequestError::Patching => format!("{section_name} is unavailable while the client is preparing"),
+        LcuRequestError::Patching => {
+            format!("{section_name} is unavailable while the client is preparing")
+        }
         LcuRequestError::Unavailable => format!("{section_name} is temporarily unavailable"),
         LcuRequestError::Unexpected => format!("{section_name} returned an unexpected response"),
     }
@@ -605,6 +723,7 @@ struct LcuGame {
     game_creation_date: Option<String>,
     #[serde(rename = "gameCreation")]
     game_creation: Option<Value>,
+    game_duration: Option<i64>,
     queue_id: Option<i64>,
     #[serde(default)]
     participants: Vec<LcuParticipant>,
@@ -686,6 +805,7 @@ fn map_recent_match(
 
     Some(RecentMatchSummary {
         game_id: game.game_id?,
+        champion_id: participant.champion_id,
         champion_name: participant_champion_name(participant, champion_names),
         queue_name: game.queue_id.and_then(queue_name).map(str::to_string),
         result: match stats.win {
@@ -697,7 +817,10 @@ fn map_recent_match(
         deaths,
         assists,
         kda: Some(round_to_tenth(calculate_kda(kills, deaths, assists))),
-        played_at: game.game_creation_date.or_else(|| value_to_string(game.game_creation)),
+        played_at: game
+            .game_creation_date
+            .or_else(|| value_to_string(game.game_creation)),
+        game_duration_seconds: game.game_duration,
     })
 }
 
@@ -727,6 +850,14 @@ fn queue_name(queue_id: i64) -> Option<&'static str> {
         1700 => Some("Arena"),
         _ => None,
     }
+}
+
+fn profile_icon_path(profile_icon_id: i64) -> String {
+    format!("/lol-game-data/assets/v1/profile-icons/{profile_icon_id}.jpg")
+}
+
+fn champion_icon_path(champion_id: i64) -> String {
+    format!("/lol-game-data/assets/v1/champion-icons/{champion_id}.png")
 }
 
 fn calculate_kda(kills: i64, deaths: i64, assists: i64) -> f64 {
@@ -788,10 +919,9 @@ mod tests {
 
     #[test]
     fn parses_valid_lockfile() {
-        let credentials = parse_lockfile(
-            format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:https").as_str(),
-        )
-        .expect("lockfile parses");
+        let credentials =
+            parse_lockfile(format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:https").as_str())
+                .expect("lockfile parses");
 
         assert_eq!(credentials.port, 2999);
         assert_eq!(credentials.password, TEST_LOCKFILE_VALUE);
@@ -799,10 +929,9 @@ mod tests {
 
     #[test]
     fn lockfile_credentials_debug_redacts_password() {
-        let credentials = parse_lockfile(
-            format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:https").as_str(),
-        )
-        .expect("lockfile parses");
+        let credentials =
+            parse_lockfile(format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:https").as_str())
+                .expect("lockfile parses");
         let message = format!("{credentials:?}");
 
         assert!(message.contains("<redacted>"));
@@ -814,7 +943,7 @@ mod tests {
         let error = parse_lockfile(
             format!("LeagueClient:1234:not-a-port:{TEST_LOCKFILE_VALUE}:https").as_str(),
         )
-            .expect_err("lockfile is rejected");
+        .expect_err("lockfile is rejected");
         let message = format!("{error:?}");
 
         assert!(!message.contains(TEST_LOCKFILE_VALUE));
@@ -822,9 +951,8 @@ mod tests {
 
     #[test]
     fn rejects_non_https_lockfile() {
-        let result = parse_lockfile(
-            format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:http").as_str(),
-        );
+        let result =
+            parse_lockfile(format!("LeagueClient:1234:2999:{TEST_LOCKFILE_VALUE}:http").as_str());
 
         assert!(matches!(result, Err(LcuAdapterError::InvalidLockfile)));
     }
@@ -840,6 +968,18 @@ mod tests {
         assert_eq!(patching.phase, LeagueClientPhase::Patching);
         assert!(unauthorized.message.unwrap().contains("authentication"));
         assert!(!format!("{not_logged_in:?}").contains(TEST_LOCKFILE_VALUE));
+    }
+
+    #[test]
+    fn image_asset_paths_are_fixed_local_game_data_paths() {
+        assert_eq!(
+            profile_icon_path(29),
+            "/lol-game-data/assets/v1/profile-icons/29.jpg"
+        );
+        assert_eq!(
+            champion_icon_path(103),
+            "/lol-game-data/assets/v1/champion-icons/103.png"
+        );
     }
 
     #[test]
@@ -885,6 +1025,7 @@ mod tests {
                         game_id: Some(10),
                         game_creation_date: Some("2026-04-19T12:00:00Z".to_string()),
                         game_creation: None,
+                        game_duration: Some(1880),
                         queue_id: Some(420),
                         participants: vec![
                             LcuParticipant {
@@ -928,7 +1069,9 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].champion_name, "Ahri");
+        assert_eq!(matches[0].champion_id, Some(103));
         assert_eq!(matches[0].queue_name.as_deref(), Some("Ranked Solo/Duo"));
+        assert_eq!(matches[0].game_duration_seconds, Some(1880));
         assert_eq!(matches[0].kda, Some(15.0));
         assert_eq!(matches[0].result, MatchResult::Win);
     }
