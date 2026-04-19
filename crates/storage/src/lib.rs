@@ -5,7 +5,8 @@ use std::{
 };
 
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, NewActivityEntry, SettingsValues, StartupPage,
+    ActivityEntry, ActivityKind, AppSettings, ImportLocalDataResult, LocalActivityEntry,
+    NewActivityEntry, SettingsValues, StartupPage,
 };
 use rusqlite::{Connection, OptionalExtension};
 
@@ -58,57 +59,67 @@ impl SqliteStore {
         let connection = Connection::open(&self.database_path)?;
         configure_connection(&connection)?;
 
-        connection.execute(
-            "UPDATE app_settings
-            SET startup_page = ?1,
-                compact_mode = ?2,
-                activity_limit = ?3,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1",
-            (
-                settings.startup_page.as_str(),
-                bool_to_int(settings.compact_mode),
-                settings.activity_limit,
-            ),
-        )?;
+        write_settings(&connection, settings)?;
 
         read_settings(&connection)
     }
 
-    pub fn list_activity_entries(&self, limit: i64) -> StorageResult<Vec<ActivityEntry>> {
+    pub fn list_activity_entries(
+        &self,
+        limit: i64,
+        kind: Option<ActivityKind>,
+    ) -> StorageResult<Vec<ActivityEntry>> {
         let connection = Connection::open(&self.database_path)?;
         configure_connection(&connection)?;
+        list_activity_entries(&connection, Some(limit), kind)
+    }
 
-        let mut statement = connection.prepare(
-            "SELECT id, kind, title, body, created_at
-            FROM activity_entries
-            ORDER BY created_at DESC, id DESC
-            LIMIT ?1",
-        )?;
-
-        let records = statement
-            .query_map([limit], read_activity_entry)?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(records)
+    pub fn list_all_activity_entries(&self) -> StorageResult<Vec<ActivityEntry>> {
+        let connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        list_activity_entries(&connection, None, None)
     }
 
     pub fn create_activity_entry(&self, entry: &NewActivityEntry) -> StorageResult<ActivityEntry> {
         let connection = Connection::open(&self.database_path)?;
         configure_connection(&connection)?;
 
-        connection.execute(
-            "INSERT INTO activity_entries (kind, title, body)
-            VALUES (?1, ?2, ?3)",
-            (
-                entry.kind.as_str(),
-                entry.title.as_str(),
-                entry.body.as_deref(),
-            ),
-        )?;
+        insert_activity_entry(&connection, entry)?;
 
         let id = connection.last_insert_rowid();
         read_activity_entry_by_id(&connection, id)
+    }
+
+    pub fn import_local_data(
+        &self,
+        settings: &SettingsValues,
+        activity_entries: &[LocalActivityEntry],
+    ) -> StorageResult<ImportLocalDataResult> {
+        let mut connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        let transaction = connection.transaction()?;
+
+        write_settings(&transaction, settings)?;
+        for entry in activity_entries {
+            insert_imported_activity_entry(&transaction, entry)?;
+        }
+
+        let settings = read_settings(&transaction)?;
+        let imported_activity_count = activity_entries.len();
+        transaction.commit()?;
+
+        Ok(ImportLocalDataResult {
+            settings,
+            imported_activity_count,
+        })
+    }
+
+    pub fn clear_activity_entries(&self) -> StorageResult<i64> {
+        let connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        let deleted_count = connection.execute("DELETE FROM activity_entries", [])?;
+
+        Ok(deleted_count as i64)
     }
 }
 
@@ -257,6 +268,121 @@ fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
         })
 }
 
+fn write_settings(connection: &Connection, settings: &SettingsValues) -> StorageResult<()> {
+    connection.execute(
+        "UPDATE app_settings
+        SET startup_page = ?1,
+            compact_mode = ?2,
+            activity_limit = ?3,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = 1",
+        (
+            settings.startup_page.as_str(),
+            bool_to_int(settings.compact_mode),
+            settings.activity_limit,
+        ),
+    )?;
+
+    Ok(())
+}
+
+fn list_activity_entries(
+    connection: &Connection,
+    limit: Option<i64>,
+    kind: Option<ActivityKind>,
+) -> StorageResult<Vec<ActivityEntry>> {
+    match (limit, kind) {
+        (Some(limit), Some(kind)) => {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, title, body, created_at
+                FROM activity_entries
+                WHERE kind = ?1
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?2",
+            )?;
+
+            let records = statement
+                .query_map((kind.as_str(), limit), read_activity_entry)?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(records)
+        }
+        (Some(limit), None) => {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, title, body, created_at
+                FROM activity_entries
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?1",
+            )?;
+
+            let records = statement
+                .query_map([limit], read_activity_entry)?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(records)
+        }
+        (None, Some(kind)) => {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, title, body, created_at
+                FROM activity_entries
+                WHERE kind = ?1
+                ORDER BY created_at DESC, id DESC",
+            )?;
+
+            let records = statement
+                .query_map([kind.as_str()], read_activity_entry)?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(records)
+        }
+        (None, None) => {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, title, body, created_at
+                FROM activity_entries
+                ORDER BY created_at DESC, id DESC",
+            )?;
+
+            let records = statement
+                .query_map([], read_activity_entry)?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(records)
+        }
+    }
+}
+
+fn insert_activity_entry(connection: &Connection, entry: &NewActivityEntry) -> StorageResult<()> {
+    connection.execute(
+        "INSERT INTO activity_entries (kind, title, body)
+        VALUES (?1, ?2, ?3)",
+        (
+            entry.kind.as_str(),
+            entry.title.as_str(),
+            entry.body.as_deref(),
+        ),
+    )?;
+
+    Ok(())
+}
+
+fn insert_imported_activity_entry(
+    connection: &Connection,
+    entry: &LocalActivityEntry,
+) -> StorageResult<()> {
+    connection.execute(
+        "INSERT INTO activity_entries (kind, title, body, created_at)
+        VALUES (?1, ?2, ?3, ?4)",
+        (
+            entry.kind.as_str(),
+            entry.title.as_str(),
+            entry.body.as_deref(),
+            entry.created_at.as_str(),
+        ),
+    )?;
+
+    Ok(())
+}
+
 fn read_activity_entry_by_id(connection: &Connection, id: i64) -> StorageResult<ActivityEntry> {
     connection
         .query_row(
@@ -314,12 +440,33 @@ impl application::AppStore for SqliteStore {
         SqliteStore::save_settings(self, &settings).map_err(|error| error.to_string())
     }
 
-    fn list_activity_entries(&self, limit: i64) -> Result<Vec<ActivityEntry>, String> {
-        SqliteStore::list_activity_entries(self, limit).map_err(|error| error.to_string())
+    fn list_activity_entries(
+        &self,
+        limit: i64,
+        kind: Option<ActivityKind>,
+    ) -> Result<Vec<ActivityEntry>, String> {
+        SqliteStore::list_activity_entries(self, limit, kind).map_err(|error| error.to_string())
+    }
+
+    fn list_all_activity_entries(&self) -> Result<Vec<ActivityEntry>, String> {
+        SqliteStore::list_all_activity_entries(self).map_err(|error| error.to_string())
     }
 
     fn create_activity_entry(&self, entry: NewActivityEntry) -> Result<ActivityEntry, String> {
         SqliteStore::create_activity_entry(self, &entry).map_err(|error| error.to_string())
+    }
+
+    fn import_local_data(
+        &self,
+        settings: SettingsValues,
+        activity_entries: Vec<LocalActivityEntry>,
+    ) -> Result<ImportLocalDataResult, String> {
+        SqliteStore::import_local_data(self, &settings, &activity_entries)
+            .map_err(|error| error.to_string())
+    }
+
+    fn clear_activity_entries(&self) -> Result<i64, String> {
+        SqliteStore::clear_activity_entries(self).map_err(|error| error.to_string())
     }
 }
 
@@ -438,12 +585,99 @@ mod tests {
             })
             .expect("second activity entry");
 
-        let entries = store.list_activity_entries(10).expect("activity entries");
+        let entries = store
+            .list_activity_entries(10, None)
+            .expect("activity entries");
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, second.id);
         assert_eq!(entries[1].id, first.id);
         assert_eq!(entries[0].body.as_deref(), Some("Body"));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn filters_activity_entries_by_kind() {
+        let data_dir = unique_temp_dir();
+        let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
+
+        store
+            .create_activity_entry(&NewActivityEntry {
+                kind: ActivityKind::Note,
+                title: "Note".to_string(),
+                body: None,
+            })
+            .expect("note activity entry");
+        store
+            .create_activity_entry(&NewActivityEntry {
+                kind: ActivityKind::System,
+                title: "System".to_string(),
+                body: None,
+            })
+            .expect("system activity entry");
+
+        let entries = store
+            .list_activity_entries(10, Some(ActivityKind::System))
+            .expect("filtered activity entries");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind, ActivityKind::System);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn imports_local_data_transactionally() {
+        let data_dir = unique_temp_dir();
+        let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
+
+        let result = store
+            .import_local_data(
+                &SettingsValues {
+                    startup_page: StartupPage::Activity,
+                    compact_mode: true,
+                    activity_limit: 25,
+                },
+                &[LocalActivityEntry {
+                    kind: ActivityKind::Note,
+                    title: "Imported".to_string(),
+                    body: Some("Preserved".to_string()),
+                    created_at: "2026-04-19 12:00:00".to_string(),
+                }],
+            )
+            .expect("local data import");
+
+        let entries = store.list_all_activity_entries().expect("all activity");
+
+        assert_eq!(result.imported_activity_count, 1);
+        assert_eq!(result.settings.startup_page, StartupPage::Activity);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].created_at, "2026-04-19 12:00:00");
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn clears_activity_entries() {
+        let data_dir = unique_temp_dir();
+        let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
+
+        store
+            .create_activity_entry(&NewActivityEntry {
+                kind: ActivityKind::Note,
+                title: "Note".to_string(),
+                body: None,
+            })
+            .expect("activity entry");
+
+        let deleted_count = store.clear_activity_entries().expect("activity clears");
+
+        assert_eq!(deleted_count, 1);
+        assert!(store
+            .list_all_activity_entries()
+            .expect("all activity")
+            .is_empty());
 
         let _ = fs::remove_dir_all(data_dir);
     }
