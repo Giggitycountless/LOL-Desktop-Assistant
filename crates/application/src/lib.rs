@@ -7,12 +7,13 @@ use std::{
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
     ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, KdaTag,
-    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData,
-    LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport, MatchResult, NewActivityEntry,
-    ParticipantMetricLeader, ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteSummary,
-    PlayerNoteView, PostMatchComparison, PostMatchDetail, PostMatchParticipant, PostMatchTeam,
-    PostMatchTeamTotals, RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary,
-    ServiceStatus, SettingsValues, StartupPage,
+    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind,
+    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
+    MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
+    ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
+    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
+    RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary, ServiceStatus,
+    SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -59,6 +60,11 @@ pub trait LeagueClientReader {
     fn profile_icon(&self, profile_icon_id: i64)
         -> Result<LeagueImageAsset, LeagueClientReadError>;
     fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError>;
+    fn game_asset(
+        &self,
+        kind: LeagueGameAssetKind,
+        asset_id: i64,
+    ) -> Result<LeagueGameAsset, LeagueClientReadError>;
     fn completed_match(&self, game_id: i64) -> Result<LeagueCompletedMatch, LeagueClientReadError>;
     fn participant_recent_stats(
         &self,
@@ -121,6 +127,12 @@ pub struct LeagueProfileIconInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueChampionIconInput {
     pub champion_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeagueGameAssetInput {
+    pub kind: LeagueGameAssetKind,
+    pub asset_id: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,6 +463,17 @@ pub fn get_league_champion_icon(
 
     reader
         .champion_icon(champion_id)
+        .map_err(ApplicationError::from)
+}
+
+pub fn get_league_game_asset(
+    reader: &impl LeagueClientReader,
+    input: LeagueGameAssetInput,
+) -> Result<LeagueGameAsset, ApplicationError> {
+    let asset_id = normalize_league_asset_id(input.asset_id, "League game asset id")?;
+
+    reader
+        .game_asset(input.kind, asset_id)
         .map_err(ApplicationError::from)
 }
 
@@ -1397,6 +1420,40 @@ mod tests {
     }
 
     #[test]
+    fn league_game_asset_validates_id_before_reader_call() {
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        let result = get_league_game_asset(
+            &reader,
+            LeagueGameAssetInput {
+                kind: LeagueGameAssetKind::Item,
+                asset_id: 0,
+            },
+        );
+
+        assert!(matches!(result, Err(ApplicationError::Validation(_))));
+    }
+
+    #[test]
+    fn league_game_asset_returns_metadata_and_image_bytes() {
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        let result = get_league_game_asset(
+            &reader,
+            LeagueGameAssetInput {
+                kind: LeagueGameAssetKind::Spell,
+                asset_id: 4,
+            },
+        )
+        .expect("game asset reads");
+
+        assert_eq!(result.kind, LeagueGameAssetKind::Spell);
+        assert_eq!(result.asset_id, 4);
+        assert_eq!(result.name, "Spell 4");
+        assert_eq!(result.image.bytes, vec![4]);
+    }
+
+    #[test]
     fn player_note_validation_trims_and_deduplicates() {
         let store = FakeStore::new(default_settings());
 
@@ -1743,6 +1800,23 @@ mod tests {
             Ok(LeagueImageAsset {
                 mime_type: "image/png".to_string(),
                 bytes: vec![champion_id as u8],
+            })
+        }
+
+        fn game_asset(
+            &self,
+            kind: LeagueGameAssetKind,
+            asset_id: i64,
+        ) -> Result<LeagueGameAsset, LeagueClientReadError> {
+            Ok(LeagueGameAsset {
+                kind,
+                asset_id,
+                name: format!("{kind:?} {asset_id}"),
+                description: Some("Local game data asset".to_string()),
+                image: LeagueImageAsset {
+                    mime_type: "image/png".to_string(),
+                    bytes: vec![asset_id as u8],
+                },
             })
         }
 

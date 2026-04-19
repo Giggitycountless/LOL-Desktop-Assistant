@@ -3,14 +3,14 @@ use std::{error::Error, path::Path};
 use adapters::LocalLeagueClient;
 use application::{
     ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
-    LeagueProfileIconInput, LeagueSelfSnapshotInput, ParticipantPublicProfileInput,
-    PostMatchDetailInput, SettingsInput,
+    LeagueGameAssetInput, LeagueProfileIconInput, LeagueSelfSnapshotInput,
+    ParticipantPublicProfileInput, PostMatchDetailInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
     ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, LeagueClientStatus,
-    LeagueImageAsset, LeagueSelfSnapshot, LocalDataExport, ParticipantPublicProfile,
-    PlayerNoteView, PostMatchDetail, SettingsValues,
+    LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfSnapshot, LocalDataExport,
+    ParticipantPublicProfile, PlayerNoteView, PostMatchDetail, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -87,6 +87,13 @@ pub struct LeagueProfileIconCommand {
 #[serde(rename_all = "camelCase")]
 pub struct LeagueChampionIconCommand {
     pub champion_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueGameAssetCommand {
+    pub kind: LeagueGameAssetKind,
+    pub asset_id: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -269,6 +276,20 @@ pub fn get_league_champion_icon(
         &state.league_client,
         LeagueChampionIconInput {
             champion_id: command.champion_id,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
+pub fn get_league_game_asset(
+    state: &AppState,
+    command: LeagueGameAssetCommand,
+) -> Result<LeagueGameAsset, CommandError> {
+    application::get_league_game_asset(
+        &state.league_client,
+        LeagueGameAssetInput {
+            kind: command.kind,
+            asset_id: command.asset_id,
         },
     )
     .map_err(CommandError::from)
@@ -523,6 +544,18 @@ mod tests {
     }
 
     #[test]
+    fn league_game_asset_accepts_frontend_payload_shape() {
+        let command: LeagueGameAssetCommand = serde_json::from_value(json!({
+            "kind": "item",
+            "assetId": 1054
+        }))
+        .expect("frontend-shaped game asset command deserializes");
+
+        assert_eq!(command.kind, LeagueGameAssetKind::Item);
+        assert_eq!(command.asset_id, 1054);
+    }
+
+    #[test]
     fn post_match_commands_accept_frontend_payload_shapes() {
         let detail: PostMatchDetailCommand = serde_json::from_value(json!({
             "gameId": 10
@@ -633,6 +666,29 @@ mod tests {
 
         assert_eq!(value["mimeType"], "image/png");
         assert_eq!(value["bytes"], json!([1, 2, 3]));
+        assert!(value.get("url").is_none());
+        assert!(value.get("authorization").is_none());
+        assert!(value.get("password").is_none());
+    }
+
+    #[test]
+    fn league_game_asset_serializes_tooltip_metadata_without_lcu_url_fields() {
+        let value = serde_json::to_value(LeagueGameAsset {
+            kind: LeagueGameAssetKind::Rune,
+            asset_id: 8437,
+            name: "Grasp of the Undying".to_string(),
+            description: Some("Combat keystone".to_string()),
+            image: LeagueImageAsset {
+                mime_type: "image/png".to_string(),
+                bytes: vec![8, 4, 3, 7],
+            },
+        })
+        .expect("game asset serializes");
+
+        assert_eq!(value["kind"], "rune");
+        assert_eq!(value["assetId"], 8437);
+        assert_eq!(value["name"], "Grasp of the Undying");
+        assert_eq!(value["image"]["mimeType"], "image/png");
         assert!(value.get("url").is_none());
         assert!(value.get("authorization").is_none());
         assert!(value.get("password").is_none());

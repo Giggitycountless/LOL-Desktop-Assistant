@@ -3,8 +3,9 @@ use std::{collections::HashMap, fmt, fs, path::PathBuf, time::Duration};
 use application::{LeagueClientReadError, LeagueClientReader};
 use domain::{
     CurrentSummonerProfile, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
-    LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData, MatchResult,
-    ParticipantRecentStats, RankedQueue, RankedQueueSummary, RecentMatchSummary,
+    LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset,
+    LeagueSelfData, MatchResult, ParticipantRecentStats, RankedQueue, RankedQueueSummary,
+    RecentMatchSummary,
 };
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::Deserialize;
@@ -16,6 +17,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const LEAGUE_CLIENT_PROCESSES: [&str; 2] = ["LeagueClientUx.exe", "LeagueClient.exe"];
 const PROFILE_ICON_MIME: &str = "image/jpeg";
 const CHAMPION_ICON_MIME: &str = "image/png";
+const GAME_ASSET_MIME: &str = "image/png";
 const MAX_COMPLETED_MATCH_SCAN: i64 = 20;
 
 pub fn layer_name() -> &'static str {
@@ -93,6 +95,39 @@ impl LocalLeagueClient {
         session
             .get_image_asset(champion_icon_path(champion_id).as_str(), CHAMPION_ICON_MIME)
             .map_err(read_error_from_request)
+    }
+
+    fn read_game_asset(
+        &self,
+        kind: LeagueGameAssetKind,
+        asset_id: i64,
+    ) -> Result<LeagueGameAsset, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+
+        let metadata = session
+            .get_json::<Value>(game_asset_metadata_path(kind))
+            .ok()
+            .and_then(|value| find_game_asset_metadata(value, asset_id));
+        let image_path =
+            game_asset_image_path(kind, asset_id, metadata.as_ref()).ok_or_else(|| {
+                LeagueClientReadError::Integration(
+                    "League game asset icon is unavailable from local game data".to_string(),
+                )
+            })?;
+        let image = session
+            .get_image_asset(image_path.as_str(), GAME_ASSET_MIME)
+            .map_err(read_error_from_request)?;
+
+        Ok(LeagueGameAsset {
+            kind,
+            asset_id,
+            name: game_asset_name(kind, asset_id, metadata.as_ref()),
+            description: game_asset_description(metadata.as_ref()),
+            image,
+        })
     }
 
     fn read_completed_match(
@@ -276,6 +311,14 @@ impl LeagueClientReader for LocalLeagueClient {
 
     fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError> {
         self.read_champion_icon(champion_id)
+    }
+
+    fn game_asset(
+        &self,
+        kind: LeagueGameAssetKind,
+        asset_id: i64,
+    ) -> Result<LeagueGameAsset, LeagueClientReadError> {
+        self.read_game_asset(kind, asset_id)
     }
 
     fn completed_match(
@@ -878,6 +921,13 @@ struct LcuPlayer {
     puuid: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LcuGameAssetMetadata {
+    name: Option<String>,
+    description: Option<String>,
+    icon_path: Option<String>,
+}
+
 impl LcuParticipantStats {
     fn items(&self) -> Vec<i64> {
         [
@@ -1200,6 +1250,169 @@ fn participant_recent_stats(matches: Vec<RecentMatchSummary>) -> ParticipantRece
     }
 }
 
+fn find_game_asset_metadata(value: Value, asset_id: i64) -> Option<LcuGameAssetMetadata> {
+    match value {
+        Value::Array(values) => values
+            .into_iter()
+            .find_map(|value| metadata_from_value(value, None, asset_id)),
+        Value::Object(mut object) => {
+            if let Some(data) = object.remove("data") {
+                return find_game_asset_metadata(data, asset_id);
+            }
+
+            object.into_iter().find_map(|(key, value)| {
+                let key_id = key.parse::<i64>().ok();
+                metadata_from_value(value, key_id, asset_id)
+            })
+        }
+        _ => None,
+    }
+}
+
+fn metadata_from_value(
+    value: Value,
+    key_id: Option<i64>,
+    asset_id: i64,
+) -> Option<LcuGameAssetMetadata> {
+    let object = value.as_object()?;
+    let value_id = object
+        .get("id")
+        .or_else(|| object.get("itemId"))
+        .or_else(|| object.get("spellId"))
+        .and_then(value_as_i64)
+        .or(key_id)?;
+
+    if value_id != asset_id {
+        return None;
+    }
+
+    Some(LcuGameAssetMetadata {
+        name: object.get("name").and_then(value_as_string),
+        description: game_asset_description_from_object(object),
+        icon_path: object.get("iconPath").and_then(value_as_string),
+    })
+}
+
+fn game_asset_description_from_object(object: &serde_json::Map<String, Value>) -> Option<String> {
+    [
+        "description",
+        "plaintext",
+        "longDesc",
+        "shortDesc",
+        "tooltip",
+    ]
+    .into_iter()
+    .find_map(|key| object.get(key).and_then(value_as_string))
+    .and_then(|value| non_empty_owned(clean_game_asset_text(value)))
+}
+
+fn game_asset_name(
+    kind: LeagueGameAssetKind,
+    asset_id: i64,
+    metadata: Option<&LcuGameAssetMetadata>,
+) -> String {
+    metadata
+        .and_then(|metadata| non_empty(metadata.name.as_deref()).map(str::to_string))
+        .unwrap_or_else(|| format!("{} {asset_id}", game_asset_label(kind)))
+}
+
+fn game_asset_description(metadata: Option<&LcuGameAssetMetadata>) -> Option<String> {
+    metadata.and_then(|metadata| metadata.description.clone())
+}
+
+fn game_asset_image_path(
+    kind: LeagueGameAssetKind,
+    asset_id: i64,
+    metadata: Option<&LcuGameAssetMetadata>,
+) -> Option<String> {
+    metadata
+        .and_then(|metadata| metadata.icon_path.as_deref())
+        .and_then(normalize_lcu_asset_path)
+        .or_else(|| fallback_game_asset_image_path(kind, asset_id))
+}
+
+fn game_asset_metadata_path(kind: LeagueGameAssetKind) -> &'static str {
+    match kind {
+        LeagueGameAssetKind::Item => "/lol-game-data/assets/v1/items.json",
+        LeagueGameAssetKind::Rune => "/lol-game-data/assets/v1/perks.json",
+        LeagueGameAssetKind::Spell => "/lol-game-data/assets/v1/summoner-spells.json",
+    }
+}
+
+fn fallback_game_asset_image_path(kind: LeagueGameAssetKind, asset_id: i64) -> Option<String> {
+    match kind {
+        LeagueGameAssetKind::Item => Some(format!("/lol-game-data/assets/v1/items/{asset_id}.png")),
+        LeagueGameAssetKind::Rune => None,
+        LeagueGameAssetKind::Spell => Some(format!(
+            "/lol-game-data/assets/v1/summoner-spells/{asset_id}.png"
+        )),
+    }
+}
+
+fn game_asset_label(kind: LeagueGameAssetKind) -> &'static str {
+    match kind {
+        LeagueGameAssetKind::Item => "Item",
+        LeagueGameAssetKind::Rune => "Rune",
+        LeagueGameAssetKind::Spell => "Spell",
+    }
+}
+
+fn normalize_lcu_asset_path(value: &str) -> Option<String> {
+    let path = value.trim().replace('\\', "/").replace(' ', "%20");
+
+    if path.is_empty() || path.contains("://") || path.contains("..") {
+        return None;
+    }
+
+    if path.starts_with("/lol-game-data/assets/") {
+        Some(path)
+    } else if path.starts_with("lol-game-data/assets/") {
+        Some(format!("/{path}"))
+    } else if path.starts_with("ASSETS/") || path.starts_with("assets/") {
+        Some(format!("/lol-game-data/assets/{path}"))
+    } else {
+        None
+    }
+}
+
+fn clean_game_asset_text(value: String) -> String {
+    let mut text = String::new();
+    let mut inside_tag = false;
+
+    for character in value.chars() {
+        match character {
+            '<' => inside_tag = true,
+            '>' => inside_tag = false,
+            _ if !inside_tag => text.push(character),
+            _ => {}
+        }
+    }
+
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("  ", " ")
+        .trim()
+        .to_string()
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(value) => value.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn value_as_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => non_empty(Some(value.as_str())).map(str::to_string),
+        Value::Number(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 fn match_result_from_stats(stats: &LcuParticipantStats) -> MatchResult {
     match stats.win {
         Some(true) => MatchResult::Win,
@@ -1384,6 +1597,71 @@ mod tests {
         assert_eq!(
             champion_icon_path(103),
             "/lol-game-data/assets/v1/champion-icons/103.png"
+        );
+    }
+
+    #[test]
+    fn game_asset_metadata_paths_are_fixed_local_game_data_paths() {
+        assert_eq!(
+            game_asset_metadata_path(LeagueGameAssetKind::Item),
+            "/lol-game-data/assets/v1/items.json"
+        );
+        assert_eq!(
+            game_asset_metadata_path(LeagueGameAssetKind::Rune),
+            "/lol-game-data/assets/v1/perks.json"
+        );
+        assert_eq!(
+            game_asset_metadata_path(LeagueGameAssetKind::Spell),
+            "/lol-game-data/assets/v1/summoner-spells.json"
+        );
+    }
+
+    #[test]
+    fn game_asset_metadata_accepts_array_and_cleans_description() {
+        let metadata = find_game_asset_metadata(
+            serde_json::json!([
+                {
+                    "id": 1054,
+                    "name": "Doran's Shield",
+                    "description": "<mainText>Blocks &amp; recovers health.</mainText>",
+                    "iconPath": "ASSETS/Items/Icons2D/1054.png"
+                }
+            ]),
+            1054,
+        )
+        .expect("metadata is found");
+
+        assert_eq!(metadata.name.as_deref(), Some("Doran's Shield"));
+        assert_eq!(
+            metadata.description.as_deref(),
+            Some("Blocks & recovers health.")
+        );
+        assert_eq!(
+            game_asset_image_path(LeagueGameAssetKind::Item, 1054, Some(&metadata)).as_deref(),
+            Some("/lol-game-data/assets/ASSETS/Items/Icons2D/1054.png")
+        );
+    }
+
+    #[test]
+    fn game_asset_metadata_accepts_object_data_shape() {
+        let metadata = find_game_asset_metadata(
+            serde_json::json!({
+                "data": {
+                    "4": {
+                        "name": "Flash",
+                        "tooltip": "Teleport a short distance.",
+                        "iconPath": "/lol-game-data/assets/v1/summoner-spells/4.png"
+                    }
+                }
+            }),
+            4,
+        )
+        .expect("metadata is found");
+
+        assert_eq!(metadata.name.as_deref(), Some("Flash"));
+        assert_eq!(
+            game_asset_description(Some(&metadata)).as_deref(),
+            Some("Teleport a short distance.")
         );
     }
 

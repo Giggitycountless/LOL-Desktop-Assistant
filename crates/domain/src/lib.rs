@@ -262,6 +262,24 @@ pub struct LeagueImageAsset {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueGameAsset {
+    pub kind: LeagueGameAssetKind,
+    pub asset_id: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub image: LeagueImageAsset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LeagueGameAssetKind {
+    Item,
+    Rune,
+    Spell,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LeagueDataSection {
