@@ -111,7 +111,9 @@ impl LocalLeagueClient {
             .map(champion_name_map)
             .unwrap_or_default();
         let history = session
-            .get_json::<LcuMatchHistoryResponse>(current_matches_path(MAX_COMPLETED_MATCH_SCAN).as_str())
+            .get_json::<LcuMatchHistoryResponse>(
+                current_matches_path(MAX_COMPLETED_MATCH_SCAN).as_str(),
+            )
             .map_err(read_error_from_request)?;
 
         history
@@ -1103,7 +1105,8 @@ fn map_completed_participant(
         display_name: player
             .and_then(player_display_name)
             .unwrap_or_else(|| format!("Participant {participant_id}")),
-        player_puuid: player.and_then(|value| non_empty(value.puuid.as_deref()).map(str::to_string)),
+        player_puuid: player
+            .and_then(|value| non_empty(value.puuid.as_deref()).map(str::to_string)),
         profile_icon_id: player.and_then(player_profile_icon_id),
         champion_id: participant.champion_id,
         champion_name: participant_champion_name(participant, champion_names),
@@ -1223,7 +1226,9 @@ fn champion_icon_path(champion_id: i64) -> String {
 }
 
 fn current_matches_path(limit: i64) -> String {
-    format!("/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={limit}")
+    format!(
+        "/lol-match-history/v1/products/lol/current-summoner/matches?begIndex=0&endIndex={limit}"
+    )
 }
 
 fn puuid_matches_path(player_puuid: &str, limit: i64) -> String {
@@ -1274,9 +1279,9 @@ fn strings_match(left: Option<&str>, right: Option<&str>) -> bool {
 
 fn is_safe_lcu_path_id(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
 }
 
 fn value_to_string(value: Option<Value>) -> Option<String> {

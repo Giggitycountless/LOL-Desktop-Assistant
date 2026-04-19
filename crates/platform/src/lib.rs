@@ -7,8 +7,8 @@ use application::{
     PostMatchDetailInput, SettingsInput,
 };
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    ClearPlayerNoteResult, HealthReport, ImportLocalDataResult, LeagueClientStatus,
+    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
+    ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, LeagueClientStatus,
     LeagueImageAsset, LeagueSelfSnapshot, LocalDataExport, ParticipantPublicProfile,
     PlayerNoteView, PostMatchDetail, SettingsValues,
 };
@@ -640,8 +640,8 @@ mod tests {
 
     #[test]
     fn post_match_detail_serializes_without_internal_identity_fields() {
-        let value = serde_json::to_value(sample_post_match_detail())
-            .expect("post-match detail serializes");
+        let value =
+            serde_json::to_value(sample_post_match_detail()).expect("post-match detail serializes");
         let serialized = value.to_string();
 
         assert_eq!(value["gameId"], 10);

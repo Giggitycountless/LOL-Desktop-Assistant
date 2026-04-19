@@ -5,14 +5,14 @@ use std::{
 };
 
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
-    ClearPlayerNoteResult, HealthReport, ImportLocalDataResult, KdaTag, LeagueClientStatus,
-    LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot,
-    LocalActivityEntry, LocalDataExport, MatchResult, NewActivityEntry, ParticipantMetricLeader,
-    ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView,
-    PostMatchComparison, PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
-    RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary, ServiceStatus,
-    SettingsValues, StartupPage,
+    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
+    ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, KdaTag,
+    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueImageAsset, LeagueSelfData,
+    LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport, MatchResult, NewActivityEntry,
+    ParticipantMetricLeader, ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteSummary,
+    PlayerNoteView, PostMatchComparison, PostMatchDetail, PostMatchParticipant, PostMatchTeam,
+    PostMatchTeamTotals, RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary,
+    ServiceStatus, SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -473,7 +473,8 @@ pub fn get_post_match_participant_profile(
     input: ParticipantPublicProfileInput,
 ) -> Result<ParticipantPublicProfile, ApplicationError> {
     validate_game_and_participant_ids(input.game_id, input.participant_id)?;
-    let recent_limit = normalize_match_limit(input.recent_limit.unwrap_or(DEFAULT_PUBLIC_RECENT_LIMIT))?;
+    let recent_limit =
+        normalize_match_limit(input.recent_limit.unwrap_or(DEFAULT_PUBLIC_RECENT_LIMIT))?;
     let completed_match = reader
         .completed_match(input.game_id)
         .map_err(ApplicationError::from)?;
@@ -530,11 +531,8 @@ pub fn save_player_note(
     reader: &impl LeagueClientReader,
     input: SavePlayerNoteInput,
 ) -> Result<PlayerNoteView, ApplicationError> {
-    let (player_puuid, display_name) = resolve_post_match_participant_identity(
-        reader,
-        input.game_id,
-        input.participant_id,
-    )?;
+    let (player_puuid, display_name) =
+        resolve_post_match_participant_identity(reader, input.game_id, input.participant_id)?;
 
     save_player_note_for_resolved_player(store, input, player_puuid, display_name)
 }
@@ -544,11 +542,8 @@ pub fn clear_player_note(
     reader: &impl LeagueClientReader,
     input: ClearPlayerNoteInput,
 ) -> Result<ClearPlayerNoteResult, ApplicationError> {
-    let (player_puuid, _) = resolve_post_match_participant_identity(
-        reader,
-        input.game_id,
-        input.participant_id,
-    )?;
+    let (player_puuid, _) =
+        resolve_post_match_participant_identity(reader, input.game_id, input.participant_id)?;
 
     clear_player_note_for_resolved_player(store, input, player_puuid.as_str())
 }
@@ -741,9 +736,18 @@ fn post_match_teams(participants: &[PostMatchParticipant]) -> Vec<PostMatchTeam>
 
 fn team_totals(participants: &[PostMatchParticipant]) -> PostMatchTeamTotals {
     PostMatchTeamTotals {
-        kills: participants.iter().map(|participant| participant.kills).sum(),
-        deaths: participants.iter().map(|participant| participant.deaths).sum(),
-        assists: participants.iter().map(|participant| participant.assists).sum(),
+        kills: participants
+            .iter()
+            .map(|participant| participant.kills)
+            .sum(),
+        deaths: participants
+            .iter()
+            .map(|participant| participant.deaths)
+            .sum(),
+        assists: participants
+            .iter()
+            .map(|participant| participant.assists)
+            .sum(),
         gold_earned: participants
             .iter()
             .map(|participant| participant.gold_earned)
@@ -767,9 +771,7 @@ fn post_match_comparison(participants: &[PostMatchParticipant]) -> PostMatchComp
         most_damage: metric_leader(participants, |participant| {
             participant.damage_to_champions as f64
         }),
-        highest_vision: metric_leader(participants, |participant| {
-            participant.vision_score as f64
-        }),
+        highest_vision: metric_leader(participants, |participant| participant.vision_score as f64),
     }
 }
 
@@ -1443,7 +1445,10 @@ mod tests {
         assert_eq!(detail.teams[0].totals.kills, 7);
         assert_eq!(detail.comparison.most_damage.unwrap().participant_id, 2);
         assert!(detail.teams[0].participants[0].note_summary.has_note);
-        assert_eq!(detail.teams[0].participants[0].note_summary.tags, vec!["carry"]);
+        assert_eq!(
+            detail.teams[0].participants[0].note_summary.tags,
+            vec!["carry"]
+        );
     }
 
     #[test]
@@ -1581,7 +1586,10 @@ mod tests {
                 .cloned())
         }
 
-        fn save_player_note(&self, note: StoredPlayerNoteInput) -> Result<StoredPlayerNote, String> {
+        fn save_player_note(
+            &self,
+            note: StoredPlayerNoteInput,
+        ) -> Result<StoredPlayerNote, String> {
             let saved = StoredPlayerNote {
                 player_puuid: note.player_puuid,
                 last_display_name: note.last_display_name,

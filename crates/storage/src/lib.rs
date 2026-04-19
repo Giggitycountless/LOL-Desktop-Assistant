@@ -140,7 +140,8 @@ impl SqliteStore {
         configure_connection(&connection)?;
 
         write_player_note(&connection, note)?;
-        read_player_note(&connection, note.player_puuid.as_str())?.ok_or(StorageError::MissingPlayerNote)
+        read_player_note(&connection, note.player_puuid.as_str())?
+            .ok_or(StorageError::MissingPlayerNote)
     }
 
     pub fn clear_player_note(&self, player_puuid: &str) -> StorageResult<bool> {
@@ -479,18 +480,20 @@ fn read_player_note(
             },
         )
         .optional()?
-        .map(|(player_puuid, last_display_name, note, tags_json, updated_at)| {
-            let tags: Vec<String> = serde_json::from_str(tags_json.as_str())
-                .map_err(|error| StorageError::InvalidPlayerTags(error.to_string()))?;
+        .map(
+            |(player_puuid, last_display_name, note, tags_json, updated_at)| {
+                let tags: Vec<String> = serde_json::from_str(tags_json.as_str())
+                    .map_err(|error| StorageError::InvalidPlayerTags(error.to_string()))?;
 
-            Ok(application::StoredPlayerNote {
-                player_puuid,
-                last_display_name,
-                note,
-                tags,
-                updated_at,
-            })
-        })
+                Ok(application::StoredPlayerNote {
+                    player_puuid,
+                    last_display_name,
+                    note,
+                    tags,
+                    updated_at,
+                })
+            },
+        )
         .transpose()
 }
 
