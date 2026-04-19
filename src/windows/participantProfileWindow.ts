@@ -17,7 +17,7 @@ export async function openParticipantProfileWindow(selection: SelectedParticipan
     return;
   }
 
-  new WebviewWindow(PARTICIPANT_PROFILE_WINDOW_LABEL, {
+  const profileWindow = new WebviewWindow(PARTICIPANT_PROFILE_WINDOW_LABEL, {
     center: true,
     focus: true,
     height: 720,
@@ -27,6 +27,9 @@ export async function openParticipantProfileWindow(selection: SelectedParticipan
     title: "Participant Profile",
     url: participantProfileWindowUrl(selection),
     width: 420,
+  });
+  void profileWindow.once("tauri://error", () => {
+    console.warn("Participant profile window could not be opened.");
   });
 }
 

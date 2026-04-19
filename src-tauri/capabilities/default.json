@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Default desktop capability",
   "windows": ["main", "participant-profile"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-show",
+    "core:window:allow-set-focus"
+  ]
 }
