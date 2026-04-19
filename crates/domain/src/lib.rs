@@ -456,6 +456,7 @@ pub struct ParticipantRecentStats {
     pub match_count: usize,
     pub average_kda: Option<f64>,
     pub recent_champions: Vec<String>,
+    pub recent_matches: Vec<RecentMatchSummary>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

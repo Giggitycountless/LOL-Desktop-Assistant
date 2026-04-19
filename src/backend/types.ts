@@ -244,6 +244,7 @@ export type ParticipantRecentStats = {
   matchCount: number;
   averageKda: number | null;
   recentChampions: string[];
+  recentMatches: RecentMatchSummary[];
 };
 
 export type ParticipantPublicProfile = {

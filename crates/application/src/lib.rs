@@ -1669,6 +1669,10 @@ mod tests {
 
         assert_eq!(profile.display_name, "Player Two");
         assert_eq!(profile.recent_stats.as_ref().unwrap().match_count, 3);
+        assert_eq!(
+            profile.recent_stats.as_ref().unwrap().recent_matches.len(),
+            3
+        );
         assert!(format!("{profile:?}").contains("Player Two"));
         assert!(!format!("{profile:?}").contains("enemy-puuid"));
     }
@@ -1960,10 +1964,15 @@ mod tests {
             _player_puuid: &str,
             limit: i64,
         ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+            let recent_matches = (1..=limit)
+                .map(|id| sample_match(id, format!("Recent Champion {id}").as_str(), 5, 2, 7))
+                .collect();
+
             Ok(ParticipantRecentStats {
                 match_count: limit as usize,
                 average_kda: Some(3.5),
                 recent_champions: vec!["Ahri".to_string()],
+                recent_matches,
             })
         }
     }

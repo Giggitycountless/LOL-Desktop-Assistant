@@ -1227,14 +1227,14 @@ fn participant_recent_stats(matches: Vec<RecentMatchSummary>) -> ParticipantRece
     let mut match_count = 0;
     let mut recent_champions = Vec::new();
 
-    for match_summary in matches {
+    for match_summary in &matches {
         match_count += 1;
         total_kda += calculate_kda(
             match_summary.kills,
             match_summary.deaths,
             match_summary.assists,
         );
-        recent_champions.push(match_summary.champion_name);
+        recent_champions.push(match_summary.champion_name.clone());
     }
 
     let average_kda = if match_count == 0 {
@@ -1247,6 +1247,7 @@ fn participant_recent_stats(matches: Vec<RecentMatchSummary>) -> ParticipantRece
         match_count,
         average_kda,
         recent_champions,
+        recent_matches: matches,
     }
 }
 

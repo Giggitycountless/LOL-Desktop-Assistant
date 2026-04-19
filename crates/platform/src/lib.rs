@@ -728,6 +728,19 @@ mod tests {
                 match_count: 3,
                 average_kda: Some(2.5),
                 recent_champions: vec!["Ahri".to_string()],
+                recent_matches: vec![RecentMatchSummary {
+                    game_id: 20,
+                    champion_id: Some(103),
+                    champion_name: "Ahri".to_string(),
+                    queue_name: Some("Ranked Solo/Duo".to_string()),
+                    result: MatchResult::Win,
+                    kills: 4,
+                    deaths: 2,
+                    assists: 8,
+                    kda: Some(6.0),
+                    played_at: Some("2026-04-19T12:00:00Z".to_string()),
+                    game_duration_seconds: Some(1800),
+                }],
             }),
             note: Some(PlayerNoteView {
                 game_id: 10,
@@ -742,6 +755,10 @@ mod tests {
         let serialized = value.to_string();
 
         assert_eq!(value["recentStats"]["matchCount"], 3);
+        assert_eq!(
+            value["recentStats"]["recentMatches"][0]["championName"],
+            "Ahri"
+        );
         assert_eq!(value["note"]["tags"], json!(["mid"]));
         assert!(!serialized.contains("puuid"));
         assert!(!serialized.contains("authorization"));
