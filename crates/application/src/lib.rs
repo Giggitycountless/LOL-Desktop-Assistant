@@ -1,10 +1,12 @@
 use std::{error::Error, fmt};
 
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, DatabaseStatus, HealthReport,
-    NewActivityEntry, ServiceStatus, SettingsValues, StartupPage,
+    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult, DatabaseStatus,
+    HealthReport, ImportLocalDataResult, LocalActivityEntry, LocalDataExport, NewActivityEntry,
+    ServiceStatus, SettingsValues, StartupPage,
 };
 
+const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
 const MIN_ACTIVITY_LIMIT: i64 = 1;
 const MAX_ACTIVITY_LIMIT: i64 = 500;
 const DEFAULT_ACTIVITY_LIMIT: i64 = 100;
@@ -15,8 +17,19 @@ pub trait AppStore {
     fn schema_version(&self) -> Result<i64, String>;
     fn get_settings(&self) -> Result<AppSettings, String>;
     fn save_settings(&self, settings: SettingsValues) -> Result<AppSettings, String>;
-    fn list_activity_entries(&self, limit: i64) -> Result<Vec<ActivityEntry>, String>;
+    fn list_activity_entries(
+        &self,
+        limit: i64,
+        kind: Option<ActivityKind>,
+    ) -> Result<Vec<ActivityEntry>, String>;
+    fn list_all_activity_entries(&self) -> Result<Vec<ActivityEntry>, String>;
     fn create_activity_entry(&self, entry: NewActivityEntry) -> Result<ActivityEntry, String>;
+    fn import_local_data(
+        &self,
+        settings: SettingsValues,
+        activity_entries: Vec<LocalActivityEntry>,
+    ) -> Result<ImportLocalDataResult, String>;
+    fn clear_activity_entries(&self) -> Result<i64, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +42,7 @@ pub struct SettingsInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityListInput {
     pub limit: Option<i64>,
+    pub kind: Option<ActivityKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +94,14 @@ pub fn health_report(database_status: DatabaseStatus, schema_version: Option<i64
     }
 }
 
+pub fn settings_defaults() -> SettingsValues {
+    SettingsValues {
+        startup_page: StartupPage::Dashboard,
+        compact_mode: false,
+        activity_limit: DEFAULT_ACTIVITY_LIMIT,
+    }
+}
+
 pub fn app_snapshot(store: &impl AppStore) -> Result<AppSnapshot, ApplicationError> {
     let schema_version = store.schema_version().map_err(ApplicationError::Storage)?;
     let settings = get_settings(store)?;
@@ -87,6 +109,7 @@ pub fn app_snapshot(store: &impl AppStore) -> Result<AppSnapshot, ApplicationErr
         store,
         ActivityListInput {
             limit: Some(settings.activity_limit),
+            kind: None,
         },
     )?
     .records;
@@ -94,6 +117,7 @@ pub fn app_snapshot(store: &impl AppStore) -> Result<AppSnapshot, ApplicationErr
     Ok(AppSnapshot {
         health: health_report(DatabaseStatus::Ok, Some(schema_version)),
         settings,
+        settings_defaults: settings_defaults(),
         recent_activity,
     })
 }
@@ -134,7 +158,7 @@ pub fn list_activity_entries(
 ) -> Result<ActivityEntries, ApplicationError> {
     let limit = normalize_activity_limit(input.limit.unwrap_or(DEFAULT_ACTIVITY_LIMIT))?;
     let records = store
-        .list_activity_entries(limit)
+        .list_activity_entries(limit, input.kind)
         .map_err(ApplicationError::Storage)?;
 
     Ok(ActivityEntries { records })
@@ -151,16 +175,90 @@ pub fn create_activity_note(
         .map_err(ApplicationError::Storage)
 }
 
+pub fn export_local_data(store: &impl AppStore) -> Result<LocalDataExport, ApplicationError> {
+    let settings = store
+        .get_settings()
+        .map_err(ApplicationError::Storage)?
+        .values();
+    let activity_entries = store
+        .list_all_activity_entries()
+        .map_err(ApplicationError::Storage)?
+        .into_iter()
+        .map(|entry| LocalActivityEntry {
+            kind: entry.kind,
+            title: entry.title,
+            body: entry.body,
+            created_at: entry.created_at,
+        })
+        .collect();
+
+    Ok(LocalDataExport {
+        format_version: LOCAL_DATA_FORMAT_VERSION,
+        settings,
+        activity_entries,
+    })
+}
+
+pub fn import_local_data(
+    store: &impl AppStore,
+    json: &str,
+) -> Result<ImportLocalDataResult, ApplicationError> {
+    let data: LocalDataExport = serde_json::from_str(json).map_err(|error| {
+        ApplicationError::Validation(format!("Import JSON is invalid: {error}"))
+    })?;
+
+    if data.format_version != LOCAL_DATA_FORMAT_VERSION {
+        return Err(ApplicationError::Validation(format!(
+            "Unsupported import format version: {}",
+            data.format_version
+        )));
+    }
+
+    validate_settings_values(&data.settings)?;
+    for entry in &data.activity_entries {
+        validate_local_activity_entry(entry)?;
+    }
+
+    store
+        .import_local_data(data.settings, data.activity_entries)
+        .map_err(ApplicationError::Storage)
+}
+
+pub fn clear_activity_entries(
+    store: &impl AppStore,
+    confirm: bool,
+) -> Result<ClearActivityResult, ApplicationError> {
+    if !confirm {
+        return Err(ApplicationError::Validation(
+            "Activity clear confirmation is required".to_string(),
+        ));
+    }
+
+    let deleted_count = store
+        .clear_activity_entries()
+        .map_err(ApplicationError::Storage)?;
+
+    Ok(ClearActivityResult { deleted_count })
+}
+
 fn validate_settings(input: SettingsInput) -> Result<SettingsValues, ApplicationError> {
     let startup_page = StartupPage::parse(input.startup_page.as_str()).ok_or_else(|| {
         ApplicationError::Validation("Startup page must be dashboard, activity, or settings".into())
     })?;
 
-    Ok(SettingsValues {
+    let values = SettingsValues {
         startup_page,
         compact_mode: input.compact_mode,
-        activity_limit: normalize_activity_limit(input.activity_limit)?,
-    })
+        activity_limit: input.activity_limit,
+    };
+
+    validate_settings_values(&values)?;
+    Ok(values)
+}
+
+fn validate_settings_values(settings: &SettingsValues) -> Result<(), ApplicationError> {
+    normalize_activity_limit(settings.activity_limit)?;
+    Ok(())
 }
 
 fn normalize_activity_limit(limit: i64) -> Result<i64, ApplicationError> {
@@ -206,6 +304,36 @@ fn validate_activity_note(input: ActivityNoteInput) -> Result<NewActivityEntry, 
         title,
         body,
     })
+}
+
+fn validate_local_activity_entry(entry: &LocalActivityEntry) -> Result<(), ApplicationError> {
+    if entry.title.trim().is_empty() {
+        return Err(ApplicationError::Validation(
+            "Imported activity title is required".to_string(),
+        ));
+    }
+
+    if entry.title.chars().count() > MAX_ACTIVITY_TITLE_LEN {
+        return Err(ApplicationError::Validation(format!(
+            "Imported activity title must be {MAX_ACTIVITY_TITLE_LEN} characters or fewer"
+        )));
+    }
+
+    if let Some(value) = &entry.body {
+        if value.chars().count() > MAX_ACTIVITY_BODY_LEN {
+            return Err(ApplicationError::Validation(format!(
+                "Imported activity body must be {MAX_ACTIVITY_BODY_LEN} characters or fewer"
+            )));
+        }
+    }
+
+    if entry.created_at.trim().is_empty() {
+        return Err(ApplicationError::Validation(
+            "Imported activity createdAt is required".to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -271,16 +399,108 @@ mod tests {
         assert_eq!(result.body.as_deref(), Some("Body"));
     }
 
+    #[test]
+    fn list_activity_entries_passes_filter_to_store() {
+        let store = FakeStore::new(default_settings());
+
+        let _ = list_activity_entries(
+            &store,
+            ActivityListInput {
+                limit: Some(25),
+                kind: Some(ActivityKind::Note),
+            },
+        )
+        .expect("activity entries list");
+
+        assert_eq!(
+            *store.last_activity_query.borrow(),
+            Some((25, Some(ActivityKind::Note)))
+        );
+    }
+
+    #[test]
+    fn export_local_data_includes_defaults_shape() {
+        let store = FakeStore::new(default_settings());
+        store.activity_entries.borrow_mut().push(sample_activity(1));
+
+        let data = export_local_data(&store).expect("local data export");
+
+        assert_eq!(data.format_version, 1);
+        assert_eq!(data.settings.activity_limit, 100);
+        assert_eq!(data.activity_entries.len(), 1);
+        assert_eq!(data.activity_entries[0].created_at, "2026-04-18 00:00:00");
+    }
+
+    #[test]
+    fn import_local_data_rejects_invalid_json_without_writing() {
+        let store = FakeStore::new(default_settings());
+
+        let result = import_local_data(
+            &store,
+            r#"{"formatVersion":1,"settings":{"startupPage":"dashboard","compactMode":false,"activityLimit":999},"activityEntries":[]}"#,
+        );
+
+        assert!(matches!(result, Err(ApplicationError::Validation(_))));
+        assert_eq!(*store.import_count.borrow(), 0);
+    }
+
+    #[test]
+    fn import_local_data_validates_then_writes() {
+        let store = FakeStore::new(default_settings());
+
+        let result = import_local_data(
+            &store,
+            r#"{"formatVersion":1,"settings":{"startupPage":"activity","compactMode":true,"activityLimit":50},"activityEntries":[{"kind":"note","title":"Imported","body":null,"createdAt":"2026-04-19 00:00:00"}]}"#,
+        )
+        .expect("local data import");
+
+        assert_eq!(result.imported_activity_count, 1);
+        assert_eq!(result.settings.startup_page, StartupPage::Activity);
+        assert_eq!(*store.import_count.borrow(), 1);
+    }
+
+    #[test]
+    fn clear_activity_requires_confirmation() {
+        let store = FakeStore::new(default_settings());
+
+        let result = clear_activity_entries(&store, false);
+
+        assert!(matches!(result, Err(ApplicationError::Validation(_))));
+        assert_eq!(*store.clear_count.borrow(), 0);
+    }
+
+    #[test]
+    fn clear_activity_returns_deleted_count() {
+        let store = FakeStore::new(default_settings());
+        store.activity_entries.borrow_mut().push(sample_activity(1));
+        store.activity_entries.borrow_mut().push(sample_activity(2));
+
+        let result = clear_activity_entries(&store, true).expect("activity clears");
+
+        assert_eq!(result.deleted_count, 2);
+        assert_eq!(*store.clear_count.borrow(), 1);
+    }
+
     struct FakeStore {
         settings: RefCell<AppSettings>,
+        activity_entries: RefCell<Vec<ActivityEntry>>,
         created_entries: RefCell<Vec<NewActivityEntry>>,
+        imported_entries: RefCell<Vec<LocalActivityEntry>>,
+        last_activity_query: RefCell<Option<(i64, Option<ActivityKind>)>>,
+        import_count: RefCell<usize>,
+        clear_count: RefCell<usize>,
     }
 
     impl FakeStore {
         fn new(settings: AppSettings) -> Self {
             Self {
                 settings: RefCell::new(settings),
+                activity_entries: RefCell::new(Vec::new()),
                 created_entries: RefCell::new(Vec::new()),
+                imported_entries: RefCell::new(Vec::new()),
+                last_activity_query: RefCell::new(None),
+                import_count: RefCell::new(0),
+                clear_count: RefCell::new(0),
             }
         }
     }
@@ -306,8 +526,25 @@ mod tests {
             Ok(updated)
         }
 
-        fn list_activity_entries(&self, _limit: i64) -> Result<Vec<ActivityEntry>, String> {
-            Ok(Vec::new())
+        fn list_activity_entries(
+            &self,
+            limit: i64,
+            kind: Option<ActivityKind>,
+        ) -> Result<Vec<ActivityEntry>, String> {
+            self.last_activity_query.replace(Some((limit, kind)));
+
+            Ok(self
+                .activity_entries
+                .borrow()
+                .iter()
+                .filter(|entry| kind.is_none_or(|value| entry.kind == value))
+                .take(limit as usize)
+                .cloned()
+                .collect())
+        }
+
+        fn list_all_activity_entries(&self) -> Result<Vec<ActivityEntry>, String> {
+            Ok(self.activity_entries.borrow().clone())
         }
 
         fn create_activity_entry(&self, entry: NewActivityEntry) -> Result<ActivityEntry, String> {
@@ -321,6 +558,30 @@ mod tests {
                 created_at: "2026-04-18 00:00:00".to_string(),
             })
         }
+
+        fn import_local_data(
+            &self,
+            settings: SettingsValues,
+            activity_entries: Vec<LocalActivityEntry>,
+        ) -> Result<ImportLocalDataResult, String> {
+            *self.import_count.borrow_mut() += 1;
+            let imported_activity_count = activity_entries.len();
+            self.imported_entries.borrow_mut().extend(activity_entries);
+
+            let settings = self.save_settings(settings)?;
+
+            Ok(ImportLocalDataResult {
+                settings,
+                imported_activity_count,
+            })
+        }
+
+        fn clear_activity_entries(&self) -> Result<i64, String> {
+            *self.clear_count.borrow_mut() += 1;
+            let deleted_count = self.activity_entries.borrow().len() as i64;
+            self.activity_entries.borrow_mut().clear();
+            Ok(deleted_count)
+        }
     }
 
     fn default_settings() -> AppSettings {
@@ -329,6 +590,16 @@ mod tests {
             compact_mode: false,
             activity_limit: 100,
             updated_at: "2026-04-18 00:00:00".to_string(),
+        }
+    }
+
+    fn sample_activity(id: i64) -> ActivityEntry {
+        ActivityEntry {
+            id,
+            kind: ActivityKind::Note,
+            title: format!("Activity {id}"),
+            body: None,
+            created_at: "2026-04-18 00:00:00".to_string(),
         }
     }
 }

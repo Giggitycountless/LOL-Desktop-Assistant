@@ -27,6 +27,7 @@ pub enum DatabaseStatus {
 pub struct AppSnapshot {
     pub health: HealthReport,
     pub settings: AppSettings,
+    pub settings_defaults: SettingsValues,
     pub recent_activity: Vec<ActivityEntry>,
 }
 
@@ -39,7 +40,8 @@ pub struct AppSettings {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SettingsValues {
     pub startup_page: StartupPage,
     pub compact_mode: bool,
@@ -93,14 +95,15 @@ pub struct ActivityEntry {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NewActivityEntry {
     pub kind: ActivityKind,
     pub title: String,
     pub body: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ActivityKind {
     Note,
@@ -125,4 +128,34 @@ impl ActivityKind {
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalActivityEntry {
+    pub kind: ActivityKind,
+    pub title: String,
+    pub body: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataExport {
+    pub format_version: i64,
+    pub settings: SettingsValues,
+    pub activity_entries: Vec<LocalActivityEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportLocalDataResult {
+    pub settings: AppSettings,
+    pub imported_activity_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearActivityResult {
+    pub deleted_count: i64,
 }
