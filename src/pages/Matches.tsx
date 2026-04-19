@@ -1,44 +1,31 @@
 import { useEffect, useState } from "react";
 
+import { ParticipantProfilePanel, type SelectedParticipant } from "../components/ParticipantProfilePanel";
 import { leagueGameAssetKey, useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type {
   LeagueGameAssetKind,
   MatchResult,
   ParticipantMetricLeader,
-  ParticipantPublicProfile,
   PostMatchDetail,
   PostMatchParticipant,
   PostMatchTeam,
   RecentMatchSummary,
 } from "../backend/types";
 
-type SelectedParticipant = {
-  gameId: number;
-  participantId: number;
-};
-
 export function Matches() {
   const {
     leagueSelfSnapshot,
     leagueImages,
     postMatchDetails,
-    participantProfiles,
     isLeagueClientLoading,
     loadLeagueGameAsset,
     loadLeagueChampionIcon,
-    loadLeagueProfileIcon,
-    loadParticipantProfile,
     loadPostMatchDetail,
     refreshLeagueClient,
-    savePlayerNote,
-    clearPlayerNote,
   } = useAppState();
   const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
   const [selectedParticipant, setSelectedParticipant] = useState<SelectedParticipant | null>(null);
   const matches = leagueSelfSnapshot?.recentMatches ?? [];
-  const selectedProfile = selectedParticipant
-    ? participantProfiles[participantProfileKey(selectedParticipant.gameId, selectedParticipant.participantId)]
-    : undefined;
 
   useEffect(() => {
     for (const match of matches) {
@@ -70,16 +57,6 @@ export function Matches() {
       }
     }
   }, [loadLeagueChampionIcon, loadLeagueGameAsset, postMatchDetails]);
-
-  useEffect(() => {
-    if (selectedParticipant) {
-      void loadParticipantProfile({ ...selectedParticipant, recentLimit: 6 });
-    }
-  }, [loadParticipantProfile, selectedParticipant]);
-
-  useEffect(() => {
-    void loadLeagueProfileIcon(selectedProfile?.profileIconId);
-  }, [loadLeagueProfileIcon, selectedProfile?.profileIconId]);
 
   return (
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
@@ -136,13 +113,7 @@ export function Matches() {
           </section>
         </div>
 
-        <ParticipantProfilePanel
-          clearPlayerNote={clearPlayerNote}
-          imageUrl={selectedProfile?.profileIconId ? leagueImages.profileIcons[selectedProfile.profileIconId] : undefined}
-          profile={selectedProfile}
-          savePlayerNote={savePlayerNote}
-          selection={selectedParticipant}
-        />
+        <ParticipantProfilePanel selection={selectedParticipant} sticky />
       </div>
     </main>
   );
@@ -480,114 +451,6 @@ function AssetIcon({
   );
 }
 
-function ParticipantProfilePanel({
-  clearPlayerNote,
-  imageUrl,
-  profile,
-  savePlayerNote,
-  selection,
-}: {
-  clearPlayerNote: (gameId: number, participantId: number) => Promise<boolean>;
-  imageUrl: string | undefined;
-  profile: ParticipantPublicProfile | undefined;
-  savePlayerNote: (input: { gameId: number; participantId: number; note: string | null; tags: string[] }) => Promise<unknown>;
-  selection: SelectedParticipant | null;
-}) {
-  const [noteDraft, setNoteDraft] = useState("");
-  const [tagsDraft, setTagsDraft] = useState("");
-
-  useEffect(() => {
-    setNoteDraft(profile?.note?.note ?? "");
-    setTagsDraft(profile?.note?.tags.join(", ") ?? "");
-  }, [profile?.gameId, profile?.participantId, profile?.note?.note, profile?.note?.tags]);
-
-  if (!selection) {
-    return (
-      <aside className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm xl:sticky xl:top-7 xl:self-start">
-        <h2 className="text-base font-semibold text-zinc-950">Participant Profile</h2>
-        <p className="mt-2 text-sm text-zinc-500">Select a completed-match participant to view public profile details and local notes.</p>
-      </aside>
-    );
-  }
-
-  if (!profile) {
-    return (
-      <aside className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm xl:sticky xl:top-7 xl:self-start">
-        <h2 className="text-base font-semibold text-zinc-950">Loading profile</h2>
-        <p className="mt-2 text-sm text-zinc-500">Reading completed-match-visible participant data.</p>
-      </aside>
-    );
-  }
-
-  const tags = tagsDraft
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter(Boolean);
-
-  return (
-    <aside className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm xl:sticky xl:top-7 xl:self-start">
-      <div className="flex items-center gap-3">
-        <ProfileImage displayName={profile.displayName} imageUrl={imageUrl} />
-        <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-zinc-950">{profile.displayName}</h2>
-          <p className="mt-1 text-xs text-zinc-500">Completed match participant</p>
-        </div>
-      </div>
-
-      <div className="mt-5 grid gap-3">
-        <Detail label="Recent KDA" value={profile.recentStats?.averageKda === null || !profile.recentStats ? "Unavailable" : profile.recentStats.averageKda.toFixed(1)} />
-        <Detail label="Recent matches" value={profile.recentStats ? String(profile.recentStats.matchCount) : "Unavailable"} />
-        <Detail label="Recent champions" value={profile.recentStats?.recentChampions.join(", ") || "Unavailable"} />
-      </div>
-
-      {profile.warnings.length > 0 && (
-        <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {profile.warnings.map((warning) => (
-            <p key={`${warning.section}-${warning.message}`}>{warning.message}</p>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-5 grid gap-3">
-        <label className="grid gap-1 text-sm font-medium text-zinc-700">
-          Note
-          <textarea
-            className="min-h-28 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
-            maxLength={1000}
-            onChange={(event) => setNoteDraft(event.target.value)}
-            value={noteDraft}
-          />
-        </label>
-        <label className="grid gap-1 text-sm font-medium text-zinc-700">
-          Tags
-          <input
-            className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
-            onChange={(event) => setTagsDraft(event.target.value)}
-            placeholder="support, calm"
-            value={tagsDraft}
-          />
-        </label>
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="h-10 rounded-md bg-rose-700 px-3 text-sm font-semibold text-white transition hover:bg-rose-800"
-            onClick={() => savePlayerNote({ gameId: profile.gameId, participantId: profile.participantId, note: noteDraft, tags })}
-            type="button"
-          >
-            Save note
-          </button>
-          <button
-            className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
-            onClick={() => clearPlayerNote(profile.gameId, profile.participantId)}
-            type="button"
-          >
-            Clear
-          </button>
-        </div>
-      </div>
-    </aside>
-  );
-}
-
 function ComparisonStrip({ comparison }: { comparison: PostMatchDetail["comparison"] }) {
   return (
     <div className="grid gap-2 md:grid-cols-5">
@@ -628,18 +491,6 @@ function ChampionImage({
   return (
     <div className={`${sizeClass} flex shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500`}>
       {initials(championName)}
-    </div>
-  );
-}
-
-function ProfileImage({ displayName, imageUrl }: { displayName: string; imageUrl: string | undefined }) {
-  if (imageUrl) {
-    return <img alt={`${displayName} profile icon`} className="h-14 w-14 shrink-0 rounded-md border border-zinc-200 object-cover" src={imageUrl} />;
-  }
-
-  return (
-    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500">
-      {initials(displayName)}
     </div>
   );
 }
@@ -780,10 +631,6 @@ function formatCompact(value: number) {
 
 function formatLeaderValue(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-function participantProfileKey(gameId: number, participantId: number) {
-  return `${gameId}:${participantId}`;
 }
 
 function assetLabel(kind: LeagueGameAssetKind) {
