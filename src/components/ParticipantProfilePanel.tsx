@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 
-import { useAppState } from "../state/AppStateProvider";
-import type { MatchResult, RecentMatchSummary } from "../backend/types";
-import { emitParticipantProfileChanged } from "../windows/participantProfileWindow";
+import { PostMatchAnalysis } from "./PostMatchAnalysis";
+import { useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
+import type { MatchResult, PostMatchDetail, RecentMatchSummary } from "../backend/types";
+import { emitParticipantProfileChanged, openParticipantProfileWindow } from "../windows/participantProfileWindow";
 
 export type SelectedParticipant = {
   gameId: number;
@@ -169,6 +170,50 @@ export function ParticipantProfilePanel({
 }
 
 function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
+  const {
+    leagueImages,
+    loadLeagueChampionIcon,
+    loadLeagueGameAsset,
+    loadPostMatchDetail,
+    postMatchDetails,
+  } = useAppState();
+  const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
+  const expandedDetail = expandedGameId ? postMatchDetails[expandedGameId] : undefined;
+
+  useEffect(() => {
+    if (!expandedDetail) {
+      return;
+    }
+
+    for (const team of expandedDetail.teams) {
+      for (const participant of team.participants) {
+        void loadLeagueChampionIcon(participant.championId);
+        for (const itemId of participant.items) {
+          void loadLeagueGameAsset("item", itemId);
+        }
+        for (const runeId of participant.runes) {
+          void loadLeagueGameAsset("rune", runeId);
+        }
+        for (const spellId of participant.spells) {
+          void loadLeagueGameAsset("spell", spellId);
+        }
+      }
+    }
+  }, [expandedDetail, loadLeagueChampionIcon, loadLeagueGameAsset]);
+
+  function toggleMatch(gameId: number) {
+    const nextGameId = expandedGameId === gameId ? null : gameId;
+    setExpandedGameId(nextGameId);
+
+    if (nextGameId) {
+      void loadPostMatchDetail(nextGameId);
+    }
+  }
+
+  function selectParticipant(gameId: number, participantId: number) {
+    void openParticipantProfileWindow({ gameId, participantId });
+  }
+
   return (
     <section className="mt-5">
       <div className="flex items-center justify-between gap-3">
@@ -180,36 +225,88 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
           <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-500">Recent public match data is unavailable.</div>
         )}
         {matches.map((match) => (
-          <RecentMatchRow key={match.gameId} match={match} />
+          <RecentMatchRow
+            detail={postMatchDetails[match.gameId]}
+            gameAssets={leagueImages.gameAssets}
+            isExpanded={expandedGameId === match.gameId}
+            key={match.gameId}
+            match={match}
+            onParticipantSelect={(participantId) => selectParticipant(match.gameId, participantId)}
+            onToggle={() => toggleMatch(match.gameId)}
+            participantImages={leagueImages.championIcons}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function RecentMatchRow({ match }: { match: RecentMatchSummary }) {
+function RecentMatchRow({
+  detail,
+  gameAssets,
+  isExpanded,
+  match,
+  onParticipantSelect,
+  onToggle,
+  participantImages,
+}: {
+  detail: PostMatchDetail | undefined;
+  gameAssets: Record<string, LeagueGameAssetView>;
+  isExpanded: boolean;
+  match: RecentMatchSummary;
+  onParticipantSelect: (participantId: number) => void;
+  onToggle: () => void;
+  participantImages: Record<number, string>;
+}) {
   const { leagueImages } = useAppState();
   const imageUrl = match.championId ? leagueImages.championIcons[match.championId] : undefined;
 
   return (
-    <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-2">
-      <ChampionImage championName={match.championName} imageUrl={imageUrl} />
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="truncate text-sm font-semibold text-zinc-950">{match.championName}</p>
-          <ResultBadge result={match.result} />
+    <div className="rounded-md border border-zinc-200 bg-zinc-50">
+      <button
+        className="grid w-full grid-cols-[auto_1fr_auto_auto] items-center gap-3 p-2 text-left transition hover:bg-white"
+        onClick={onToggle}
+        type="button"
+      >
+        <ChampionImage championName={match.championName} imageUrl={imageUrl} />
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-semibold text-zinc-950">{match.championName}</p>
+            <ResultBadge result={match.result} />
+          </div>
+          <p className="mt-1 truncate text-xs text-zinc-500">
+            {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt)}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">{formatDuration(match.gameDurationSeconds)}</p>
         </div>
-        <p className="mt-1 truncate text-xs text-zinc-500">
-          {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt)}
-        </p>
-        <p className="mt-1 text-xs text-zinc-500">{formatDuration(match.gameDurationSeconds)}</p>
-      </div>
-      <div className="text-right">
-        <p className="text-sm font-semibold text-zinc-950">
-          {match.kills}/{match.deaths}/{match.assists}
-        </p>
-        <p className="mt-1 text-xs text-zinc-500">{match.kda === null ? "KDA n/a" : `KDA ${match.kda.toFixed(1)}`}</p>
-      </div>
+        <div className="text-right">
+          <p className="text-sm font-semibold text-zinc-950">
+            {match.kills}/{match.deaths}/{match.assists}
+          </p>
+          <p className="mt-1 text-xs text-zinc-500">{match.kda === null ? "KDA n/a" : `KDA ${match.kda.toFixed(1)}`}</p>
+        </div>
+        <ChevronIcon expanded={isExpanded} />
+      </button>
+
+      {isExpanded && (
+        <div className="grid gap-4 border-t border-zinc-200 bg-white p-3">
+          <div className="grid gap-2">
+            <Detail label="Result" value={formatResult(match.result)} />
+            <Detail label="Duration" value={formatDuration(match.gameDurationSeconds)} />
+            <Detail label="Played" value={formatTimestamp(match.playedAt)} />
+            <Detail label="Match ID" value={String(match.gameId)} />
+          </div>
+          {!detail && <StatePanel title="Loading analysis" body="Reading completed match details from local history" />}
+          {detail && (
+            <PostMatchAnalysis
+              detail={detail}
+              gameAssets={gameAssets}
+              onParticipantSelect={onParticipantSelect}
+              participantImages={participantImages}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -256,6 +353,29 @@ function ResultBadge({ result }: { result: MatchResult }) {
         : "border-zinc-200 bg-white text-zinc-600";
 
   return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result)}</span>;
+}
+
+function StatePanel({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
+      <p className="text-sm font-semibold text-zinc-950">{title}</p>
+      <p className="mt-1 text-sm text-zinc-500">{body}</p>
+    </div>
+  );
+}
+
+function ChevronIcon({ expanded }: { expanded: boolean }) {
+  return (
+    <svg aria-hidden="true" className="h-5 w-5 text-zinc-500" fill="none" viewBox="0 0 24 24">
+      <path
+        d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"}
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
 }
 
 function formatAverageKda(value: number | null | undefined) {
