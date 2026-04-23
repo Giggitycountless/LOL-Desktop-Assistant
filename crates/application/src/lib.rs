@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     error::Error,
     fmt,
     time::{SystemTime, UNIX_EPOCH},
@@ -11,9 +12,9 @@ use domain::{
     LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
     MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
     ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
-    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
-    RecentChampionSummary, RecentMatchSummary, RecentPerformanceSummary, ServiceStatus,
-    SettingsValues, StartupPage,
+    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals, RankedChampionLane,
+    RankedChampionSort, RankedChampionStat, RankedChampionStatsResponse, RecentChampionSummary,
+    RecentMatchSummary, RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -38,6 +39,244 @@ const SCORE_GOLD_WEIGHT: f64 = 0.12;
 const SCORE_CS_WEIGHT: f64 = 0.10;
 const SCORE_VISION_WEIGHT: f64 = 0.10;
 const SCORE_RESULT_WEIGHT: f64 = 0.08;
+
+struct RankedChampionSeed {
+    champion_id: i64,
+    champion_name: &'static str,
+    lane: RankedChampionLane,
+    win_rate: f64,
+    pick_rate: f64,
+    ban_rate: f64,
+    games: i64,
+}
+
+const RANKED_CHAMPION_SEEDS: &[RankedChampionSeed] = &[
+    RankedChampionSeed {
+        champion_id: 266,
+        champion_name: "Aatrox",
+        lane: RankedChampionLane::Top,
+        win_rate: 50.8,
+        pick_rate: 8.9,
+        ban_rate: 12.4,
+        games: 184_000,
+    },
+    RankedChampionSeed {
+        champion_id: 122,
+        champion_name: "Darius",
+        lane: RankedChampionLane::Top,
+        win_rate: 51.6,
+        pick_rate: 7.2,
+        ban_rate: 18.7,
+        games: 152_000,
+    },
+    RankedChampionSeed {
+        champion_id: 164,
+        champion_name: "Camille",
+        lane: RankedChampionLane::Top,
+        win_rate: 50.2,
+        pick_rate: 5.6,
+        ban_rate: 9.8,
+        games: 109_000,
+    },
+    RankedChampionSeed {
+        champion_id: 114,
+        champion_name: "Fiora",
+        lane: RankedChampionLane::Top,
+        win_rate: 49.9,
+        pick_rate: 6.3,
+        ban_rate: 14.6,
+        games: 126_000,
+    },
+    RankedChampionSeed {
+        champion_id: 86,
+        champion_name: "Garen",
+        lane: RankedChampionLane::Top,
+        win_rate: 52.1,
+        pick_rate: 6.8,
+        ban_rate: 7.5,
+        games: 139_000,
+    },
+    RankedChampionSeed {
+        champion_id: 64,
+        champion_name: "Lee Sin",
+        lane: RankedChampionLane::Jungle,
+        win_rate: 49.5,
+        pick_rate: 14.9,
+        ban_rate: 17.2,
+        games: 276_000,
+    },
+    RankedChampionSeed {
+        champion_id: 234,
+        champion_name: "Viego",
+        lane: RankedChampionLane::Jungle,
+        win_rate: 50.7,
+        pick_rate: 10.8,
+        ban_rate: 13.9,
+        games: 219_000,
+    },
+    RankedChampionSeed {
+        champion_id: 59,
+        champion_name: "Jarvan IV",
+        lane: RankedChampionLane::Jungle,
+        win_rate: 51.4,
+        pick_rate: 8.1,
+        ban_rate: 6.2,
+        games: 168_000,
+    },
+    RankedChampionSeed {
+        champion_id: 5,
+        champion_name: "Xin Zhao",
+        lane: RankedChampionLane::Jungle,
+        win_rate: 52.3,
+        pick_rate: 6.4,
+        ban_rate: 5.8,
+        games: 132_000,
+    },
+    RankedChampionSeed {
+        champion_id: 131,
+        champion_name: "Diana",
+        lane: RankedChampionLane::Jungle,
+        win_rate: 51.8,
+        pick_rate: 5.9,
+        ban_rate: 4.7,
+        games: 118_000,
+    },
+    RankedChampionSeed {
+        champion_id: 103,
+        champion_name: "Ahri",
+        lane: RankedChampionLane::Middle,
+        win_rate: 51.1,
+        pick_rate: 9.6,
+        ban_rate: 8.3,
+        games: 197_000,
+    },
+    RankedChampionSeed {
+        champion_id: 134,
+        champion_name: "Syndra",
+        lane: RankedChampionLane::Middle,
+        win_rate: 49.8,
+        pick_rate: 7.8,
+        ban_rate: 7.1,
+        games: 158_000,
+    },
+    RankedChampionSeed {
+        champion_id: 61,
+        champion_name: "Orianna",
+        lane: RankedChampionLane::Middle,
+        win_rate: 50.6,
+        pick_rate: 6.7,
+        ban_rate: 3.2,
+        games: 143_000,
+    },
+    RankedChampionSeed {
+        champion_id: 777,
+        champion_name: "Yone",
+        lane: RankedChampionLane::Middle,
+        win_rate: 49.4,
+        pick_rate: 11.2,
+        ban_rate: 24.5,
+        games: 231_000,
+    },
+    RankedChampionSeed {
+        champion_id: 517,
+        champion_name: "Sylas",
+        lane: RankedChampionLane::Middle,
+        win_rate: 50.1,
+        pick_rate: 8.4,
+        ban_rate: 16.2,
+        games: 176_000,
+    },
+    RankedChampionSeed {
+        champion_id: 222,
+        champion_name: "Jinx",
+        lane: RankedChampionLane::Bottom,
+        win_rate: 51.9,
+        pick_rate: 12.6,
+        ban_rate: 10.4,
+        games: 248_000,
+    },
+    RankedChampionSeed {
+        champion_id: 145,
+        champion_name: "Kai'Sa",
+        lane: RankedChampionLane::Bottom,
+        win_rate: 50.4,
+        pick_rate: 15.3,
+        ban_rate: 11.8,
+        games: 289_000,
+    },
+    RankedChampionSeed {
+        champion_id: 81,
+        champion_name: "Ezreal",
+        lane: RankedChampionLane::Bottom,
+        win_rate: 49.7,
+        pick_rate: 18.1,
+        ban_rate: 6.9,
+        games: 321_000,
+    },
+    RankedChampionSeed {
+        champion_id: 51,
+        champion_name: "Caitlyn",
+        lane: RankedChampionLane::Bottom,
+        win_rate: 50.8,
+        pick_rate: 10.7,
+        ban_rate: 15.1,
+        games: 213_000,
+    },
+    RankedChampionSeed {
+        champion_id: 523,
+        champion_name: "Aphelios",
+        lane: RankedChampionLane::Bottom,
+        win_rate: 48.9,
+        pick_rate: 7.4,
+        ban_rate: 4.3,
+        games: 147_000,
+    },
+    RankedChampionSeed {
+        champion_id: 412,
+        champion_name: "Thresh",
+        lane: RankedChampionLane::Support,
+        win_rate: 50.5,
+        pick_rate: 12.8,
+        ban_rate: 9.6,
+        games: 244_000,
+    },
+    RankedChampionSeed {
+        champion_id: 117,
+        champion_name: "Lulu",
+        lane: RankedChampionLane::Support,
+        win_rate: 51.3,
+        pick_rate: 8.8,
+        ban_rate: 12.9,
+        games: 173_000,
+    },
+    RankedChampionSeed {
+        champion_id: 111,
+        champion_name: "Nautilus",
+        lane: RankedChampionLane::Support,
+        win_rate: 50.2,
+        pick_rate: 10.5,
+        ban_rate: 18.2,
+        games: 206_000,
+    },
+    RankedChampionSeed {
+        champion_id: 497,
+        champion_name: "Rakan",
+        lane: RankedChampionLane::Support,
+        win_rate: 52.0,
+        pick_rate: 7.9,
+        ban_rate: 5.9,
+        games: 151_000,
+    },
+    RankedChampionSeed {
+        champion_id: 89,
+        champion_name: "Leona",
+        lane: RankedChampionLane::Support,
+        win_rate: 51.7,
+        pick_rate: 7.1,
+        ban_rate: 6.8,
+        games: 138_000,
+    },
+];
 
 pub trait AppStore {
     fn schema_version(&self) -> Result<i64, String>;
@@ -124,6 +363,12 @@ pub struct ActivityEntries {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueSelfSnapshotInput {
     pub match_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedChampionStatsInput {
+    pub lane: Option<RankedChampionLane>,
+    pub sort_by: Option<RankedChampionSort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,6 +694,25 @@ pub fn get_league_self_snapshot(
         data_warnings: data.data_warnings,
         refreshed_at: unix_timestamp_seconds(),
     })
+}
+
+pub fn get_ranked_champion_stats(input: RankedChampionStatsInput) -> RankedChampionStatsResponse {
+    let sort_by = input.sort_by.unwrap_or(RankedChampionSort::Overall);
+    let mut records: Vec<RankedChampionStat> = RANKED_CHAMPION_SEEDS
+        .iter()
+        .filter(|seed| input.lane.is_none_or(|lane| seed.lane == lane))
+        .map(ranked_champion_stat)
+        .collect();
+
+    records.sort_by(|left, right| compare_ranked_champions(left, right, sort_by));
+
+    RankedChampionStatsResponse {
+        lane: input.lane,
+        sort_by,
+        records,
+        source: "Local ranked data sample".to_string(),
+        updated_at: "2026-04-24".to_string(),
+    }
 }
 
 pub fn get_league_profile_icon(
@@ -1136,6 +1400,52 @@ fn round_to_tenth(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
+fn ranked_champion_stat(seed: &RankedChampionSeed) -> RankedChampionStat {
+    RankedChampionStat {
+        champion_id: seed.champion_id,
+        champion_name: seed.champion_name.to_string(),
+        lane: seed.lane,
+        win_rate: seed.win_rate,
+        pick_rate: seed.pick_rate,
+        ban_rate: seed.ban_rate,
+        overall_score: ranked_overall_score(seed.win_rate, seed.pick_rate, seed.ban_rate),
+        games: seed.games,
+    }
+}
+
+fn ranked_overall_score(win_rate: f64, pick_rate: f64, ban_rate: f64) -> f64 {
+    round_to_tenth((win_rate * 0.55) + (pick_rate * 0.25) + (ban_rate * 0.20))
+}
+
+fn compare_ranked_champions(
+    left: &RankedChampionStat,
+    right: &RankedChampionStat,
+    sort_by: RankedChampionSort,
+) -> Ordering {
+    let left_value = ranked_sort_value(left, sort_by);
+    let right_value = ranked_sort_value(right, sort_by);
+
+    right_value
+        .partial_cmp(&left_value)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| {
+            right
+                .overall_score
+                .partial_cmp(&left.overall_score)
+                .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| left.champion_name.cmp(&right.champion_name))
+}
+
+fn ranked_sort_value(record: &RankedChampionStat, sort_by: RankedChampionSort) -> f64 {
+    match sort_by {
+        RankedChampionSort::Overall => record.overall_score,
+        RankedChampionSort::WinRate => record.win_rate,
+        RankedChampionSort::BanRate => record.ban_rate,
+        RankedChampionSort::PickRate => record.pick_rate,
+    }
+}
+
 fn unix_timestamp_seconds() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1372,6 +1682,46 @@ mod tests {
         assert_eq!(result.recent_performance.kda_tag, KdaTag::High);
         assert_eq!(result.recent_performance.recent_champions.len(), 6);
         assert_eq!(result.recent_performance.top_champions.len(), 3);
+    }
+
+    #[test]
+    fn ranked_champion_stats_filters_lane_and_sorts_by_win_rate() {
+        let response = get_ranked_champion_stats(RankedChampionStatsInput {
+            lane: Some(RankedChampionLane::Jungle),
+            sort_by: Some(RankedChampionSort::WinRate),
+        });
+
+        assert_eq!(response.lane, Some(RankedChampionLane::Jungle));
+        assert_eq!(response.sort_by, RankedChampionSort::WinRate);
+        assert!(response
+            .records
+            .iter()
+            .all(|record| record.lane == RankedChampionLane::Jungle));
+        assert!(response
+            .records
+            .windows(2)
+            .all(|records| records[0].win_rate >= records[1].win_rate));
+    }
+
+    #[test]
+    fn ranked_champion_stats_supports_all_sort_modes() {
+        for sort_by in [
+            RankedChampionSort::Overall,
+            RankedChampionSort::WinRate,
+            RankedChampionSort::BanRate,
+            RankedChampionSort::PickRate,
+        ] {
+            let response = get_ranked_champion_stats(RankedChampionStatsInput {
+                lane: None,
+                sort_by: Some(sort_by),
+            });
+
+            assert_eq!(response.sort_by, sort_by);
+            assert_eq!(response.records.len(), 25);
+            assert!(response.records.windows(2).all(|records| {
+                ranked_sort_value(&records[0], sort_by) >= ranked_sort_value(&records[1], sort_by)
+            }));
+        }
     }
 
     #[test]

@@ -87,6 +87,13 @@ fn get_league_self_snapshot(
 }
 
 #[tauri::command]
+fn get_ranked_champion_stats(
+    input: platform::RankedChampionStatsCommand,
+) -> domain::RankedChampionStatsResponse {
+    platform::get_ranked_champion_stats(input)
+}
+
+#[tauri::command]
 fn get_league_profile_icon(
     state: State<'_, platform::AppState>,
     input: platform::LeagueProfileIconCommand,
@@ -158,6 +165,7 @@ fn main() {
             clear_activity_entries,
             get_league_client_status,
             get_league_self_snapshot,
+            get_ranked_champion_stats,
             get_league_profile_icon,
             get_league_champion_icon,
             get_league_game_asset,

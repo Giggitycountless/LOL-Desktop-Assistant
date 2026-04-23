@@ -5,17 +5,19 @@ import { Dashboard } from "./pages/Dashboard";
 import { Matches } from "./pages/Matches";
 import { ParticipantProfileWindow } from "./pages/ParticipantProfileWindow";
 import { Profile } from "./pages/Profile";
+import { RankedChampions } from "./pages/RankedChampions";
 import { Settings } from "./pages/Settings";
 import { AppStateProvider, useAppState } from "./state/AppStateProvider";
 import type { StartupPage } from "./backend/types";
 import { selectionFromParticipantProfileHash } from "./windows/participantProfileWindow";
 
-type Page = StartupPage | "profile" | "matches";
+type Page = StartupPage | "profile" | "matches" | "ranked";
 
 const pages: Array<{ id: Page; label: string; icon: IconName }> = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "profile", label: "Profile", icon: "profile" },
   { id: "matches", label: "Matches", icon: "matches" },
+  { id: "ranked", label: "Ranked", icon: "ranked" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -114,6 +116,7 @@ function AppShell() {
         {activePage === "dashboard" && <Dashboard />}
         {activePage === "profile" && <Profile />}
         {activePage === "matches" && <Matches />}
+        {activePage === "ranked" && <RankedChampions />}
         {activePage === "activity" && <Activity />}
         {activePage === "settings" && <Settings />}
       </div>
@@ -121,7 +124,7 @@ function AppShell() {
   );
 }
 
-type IconName = "dashboard" | "profile" | "matches" | "activity" | "settings";
+type IconName = "dashboard" | "profile" | "matches" | "ranked" | "activity" | "settings";
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, string> = {
@@ -130,6 +133,8 @@ function Icon({ name }: { name: IconName }) {
       "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-8 8a8 8 0 0 1 16 0v1H4v-1Z",
     matches:
       "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 4v3h4V8H7Zm0 5v3h4v-3H7Zm6-5v2h4V8h-4Zm0 5v2h4v-2h-4Z",
+    ranked:
+      "M6 20V9h3v11H6Zm5 0V4h3v16h-3Zm5 0v-7h3v7h-3ZM4 20h17v2H4v-2Z",
     activity:
       "M5 4h14v2H5V4Zm0 4h9v2H5V8Zm0 4h14v2H5v-2Zm0 4h9v2H5v-2Zm12-8 4 4-4 4v-3h-5v-2h5V8Z",
     settings:

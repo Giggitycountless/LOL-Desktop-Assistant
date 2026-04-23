@@ -15,6 +15,8 @@ export type LeagueClientPhase =
   | "unavailable";
 export type LeagueDataSection = "champions" | "ranked" | "matches" | "participants" | "recentStats";
 export type RankedQueue = "soloDuo" | "flex" | "other";
+export type RankedChampionLane = "top" | "jungle" | "middle" | "bottom" | "support";
+export type RankedChampionSort = "overall" | "winRate" | "banRate" | "pickRate";
 export type MatchResult = "win" | "loss" | "unknown";
 export type KdaTag = "high" | "standard" | "unavailable";
 
@@ -93,6 +95,30 @@ export type RankedQueueSummary = {
   wins: number;
   losses: number;
   isRanked: boolean;
+};
+
+export type RankedChampionStat = {
+  championId: number;
+  championName: string;
+  lane: RankedChampionLane;
+  winRate: number;
+  pickRate: number;
+  banRate: number;
+  overallScore: number;
+  games: number;
+};
+
+export type RankedChampionStatsInput = {
+  lane?: RankedChampionLane | null;
+  sortBy?: RankedChampionSort | null;
+};
+
+export type RankedChampionStatsResponse = {
+  lane: RankedChampionLane | null;
+  sortBy: RankedChampionSort;
+  records: RankedChampionStat[];
+  source: string;
+  updatedAt: string;
 };
 
 export type RecentMatchSummary = {

@@ -320,6 +320,68 @@ pub enum RankedQueue {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RankedChampionStatsResponse {
+    pub lane: Option<RankedChampionLane>,
+    pub sort_by: RankedChampionSort,
+    pub records: Vec<RankedChampionStat>,
+    pub source: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedChampionStat {
+    pub champion_id: i64,
+    pub champion_name: String,
+    pub lane: RankedChampionLane,
+    pub win_rate: f64,
+    pub pick_rate: f64,
+    pub ban_rate: f64,
+    pub overall_score: f64,
+    pub games: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RankedChampionLane {
+    Top,
+    Jungle,
+    Middle,
+    Bottom,
+    Support,
+}
+
+impl RankedChampionLane {
+    pub const ALL: [Self; 5] = [
+        Self::Top,
+        Self::Jungle,
+        Self::Middle,
+        Self::Bottom,
+        Self::Support,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Top => "Top",
+            Self::Jungle => "Jungle",
+            Self::Middle => "Middle",
+            Self::Bottom => "Bottom",
+            Self::Support => "Support",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RankedChampionSort {
+    Overall,
+    WinRate,
+    BanRate,
+    PickRate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecentMatchSummary {
     pub game_id: i64,
     pub champion_id: Option<i64>,

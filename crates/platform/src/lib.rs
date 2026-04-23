@@ -4,13 +4,14 @@ use adapters::LocalLeagueClient;
 use application::{
     ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
     LeagueGameAssetInput, LeagueProfileIconInput, LeagueSelfSnapshotInput,
-    ParticipantPublicProfileInput, PostMatchDetailInput, SettingsInput,
+    ParticipantPublicProfileInput, PostMatchDetailInput, RankedChampionStatsInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
     ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, LeagueClientStatus,
     LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfSnapshot, LocalDataExport,
-    ParticipantPublicProfile, PlayerNoteView, PostMatchDetail, SettingsValues,
+    ParticipantPublicProfile, PlayerNoteView, PostMatchDetail, RankedChampionLane,
+    RankedChampionSort, RankedChampionStatsResponse, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -75,6 +76,13 @@ pub struct ClearActivityEntriesCommand {
 #[serde(rename_all = "camelCase")]
 pub struct LeagueSelfSnapshotCommand {
     pub match_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedChampionStatsCommand {
+    pub lane: Option<RankedChampionLane>,
+    pub sort_by: Option<RankedChampionSort>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,6 +263,15 @@ pub fn get_league_self_snapshot(
     .map_err(CommandError::from)
 }
 
+pub fn get_ranked_champion_stats(
+    command: RankedChampionStatsCommand,
+) -> RankedChampionStatsResponse {
+    application::get_ranked_champion_stats(RankedChampionStatsInput {
+        lane: command.lane,
+        sort_by: command.sort_by,
+    })
+}
+
 pub fn get_league_profile_icon(
     state: &AppState,
     command: LeagueProfileIconCommand,
@@ -365,7 +382,8 @@ mod tests {
         LeagueDataWarning, MatchResult, ParticipantMetricLeader, ParticipantPublicProfile,
         ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
         PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
-        RecentMatchSummary, RecentPerformanceSummary, StartupPage,
+        RankedChampionLane, RankedChampionSort, RecentMatchSummary, RecentPerformanceSummary,
+        StartupPage,
     };
     use serde_json::json;
     use std::{
@@ -521,6 +539,35 @@ mod tests {
         .expect("frontend-shaped league snapshot command deserializes");
 
         assert_eq!(command.match_limit, Some(6));
+    }
+
+    #[test]
+    fn ranked_champion_stats_accepts_frontend_payload_shape() {
+        let command: RankedChampionStatsCommand = serde_json::from_value(json!({
+            "lane": "jungle",
+            "sortBy": "banRate"
+        }))
+        .expect("frontend-shaped ranked champion stats command deserializes");
+
+        assert_eq!(command.lane, Some(RankedChampionLane::Jungle));
+        assert_eq!(command.sort_by, Some(RankedChampionSort::BanRate));
+    }
+
+    #[test]
+    fn ranked_champion_stats_serializes_frontend_shape() {
+        let value = serde_json::to_value(get_ranked_champion_stats(RankedChampionStatsCommand {
+            lane: Some(RankedChampionLane::Bottom),
+            sort_by: Some(RankedChampionSort::PickRate),
+        }))
+        .expect("ranked champion stats serializes");
+
+        assert_eq!(value["lane"], "bottom");
+        assert_eq!(value["sortBy"], "pickRate");
+        assert_eq!(value["records"][0]["lane"], "bottom");
+        assert!(value["records"][0]["pickRate"].as_f64().unwrap() >= 0.0);
+        assert!(value["records"][0].get("puuid").is_none());
+        assert!(value["records"][0].get("authorization").is_none());
+        assert!(value["records"][0].get("password").is_none());
     }
 
     #[test]

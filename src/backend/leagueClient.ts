@@ -12,6 +12,8 @@ import type {
   ParticipantPublicProfileInput,
   PlayerNoteView,
   PostMatchDetail,
+  RankedChampionStatsInput,
+  RankedChampionStatsResponse,
   SavePlayerNoteInput,
 } from "./types";
 
@@ -21,6 +23,12 @@ export function fetchLeagueClientStatus(): Promise<LeagueClientStatus> {
 
 export function fetchLeagueSelfSnapshot(input: LeagueSelfSnapshotInput = { matchLimit: 6 }): Promise<LeagueSelfSnapshot> {
   return callBackend<LeagueSelfSnapshot>("get_league_self_snapshot", {
+    input,
+  });
+}
+
+export function fetchRankedChampionStats(input: RankedChampionStatsInput): Promise<RankedChampionStatsResponse> {
+  return callBackend<RankedChampionStatsResponse>("get_ranked_champion_stats", {
     input,
   });
 }
