@@ -88,9 +88,18 @@ fn get_league_self_snapshot(
 
 #[tauri::command]
 fn get_ranked_champion_stats(
+    state: State<'_, platform::AppState>,
     input: platform::RankedChampionStatsCommand,
-) -> domain::RankedChampionStatsResponse {
-    platform::get_ranked_champion_stats(input)
+) -> Result<domain::RankedChampionStatsResponse, platform::CommandError> {
+    platform::get_ranked_champion_stats(state.inner(), input)
+}
+
+#[tauri::command]
+fn refresh_ranked_champion_stats(
+    state: State<'_, platform::AppState>,
+    input: platform::RefreshRankedChampionStatsCommand,
+) -> Result<domain::RankedChampionStatsResponse, platform::CommandError> {
+    platform::refresh_ranked_champion_stats(state.inner(), input)
 }
 
 #[tauri::command]
@@ -166,6 +175,7 @@ fn main() {
             get_league_client_status,
             get_league_self_snapshot,
             get_ranked_champion_stats,
+            refresh_ranked_champion_stats,
             get_league_profile_icon,
             get_league_champion_icon,
             get_league_game_asset,

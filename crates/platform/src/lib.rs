@@ -1,10 +1,11 @@
 use std::{error::Error, path::Path};
 
-use adapters::LocalLeagueClient;
+use adapters::{LocalLeagueClient, RemoteRankedChampionJsonProvider};
 use application::{
     ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
     LeagueGameAssetInput, LeagueProfileIconInput, LeagueSelfSnapshotInput,
-    ParticipantPublicProfileInput, PostMatchDetailInput, RankedChampionStatsInput, SettingsInput,
+    ParticipantPublicProfileInput, PostMatchDetailInput, RankedChampionRefreshInput,
+    RankedChampionStatsInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
@@ -17,10 +18,13 @@ use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
 use tauri::{Manager, Runtime};
 
+const DEFAULT_RANKED_CHAMPION_DATA_URL: &str = "https://raw.githubusercontent.com/Giggitycountless/lol-desktop-assistant-data/main/ranked-champions/latest.json";
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     store: SqliteStore,
     league_client: LocalLeagueClient,
+    ranked_champion_provider: RemoteRankedChampionJsonProvider,
 }
 
 impl AppState {
@@ -28,6 +32,9 @@ impl AppState {
         Ok(Self {
             store: SqliteStore::initialize(data_dir)?,
             league_client: LocalLeagueClient::new(),
+            ranked_champion_provider: RemoteRankedChampionJsonProvider::new(
+                DEFAULT_RANKED_CHAMPION_DATA_URL,
+            ),
         })
     }
 }
@@ -81,6 +88,14 @@ pub struct LeagueSelfSnapshotCommand {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RankedChampionStatsCommand {
+    pub lane: Option<RankedChampionLane>,
+    pub sort_by: Option<RankedChampionSort>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshRankedChampionStatsCommand {
+    pub url: Option<String>,
     pub lane: Option<RankedChampionLane>,
     pub sort_by: Option<RankedChampionSort>,
 }
@@ -264,12 +279,30 @@ pub fn get_league_self_snapshot(
 }
 
 pub fn get_ranked_champion_stats(
+    state: &AppState,
     command: RankedChampionStatsCommand,
-) -> RankedChampionStatsResponse {
-    application::get_ranked_champion_stats(RankedChampionStatsInput {
+) -> Result<RankedChampionStatsResponse, CommandError> {
+    application::get_ranked_champion_stats_from_store(&state.store, RankedChampionStatsInput {
         lane: command.lane,
         sort_by: command.sort_by,
     })
+    .map_err(CommandError::from)
+}
+
+pub fn refresh_ranked_champion_stats(
+    state: &AppState,
+    command: RefreshRankedChampionStatsCommand,
+) -> Result<RankedChampionStatsResponse, CommandError> {
+    application::refresh_ranked_champion_stats(
+        &state.store,
+        &state.ranked_champion_provider,
+        RankedChampionRefreshInput { url: command.url },
+        RankedChampionStatsInput {
+            lane: command.lane,
+            sort_by: command.sort_by,
+        },
+    )
+    .map_err(CommandError::from)
 }
 
 pub fn get_league_profile_icon(
@@ -554,20 +587,48 @@ mod tests {
     }
 
     #[test]
-    fn ranked_champion_stats_serializes_frontend_shape() {
-        let value = serde_json::to_value(get_ranked_champion_stats(RankedChampionStatsCommand {
-            lane: Some(RankedChampionLane::Bottom),
-            sort_by: Some(RankedChampionSort::PickRate),
+    fn ranked_champion_refresh_accepts_frontend_payload_shape() {
+        let command: RefreshRankedChampionStatsCommand = serde_json::from_value(json!({
+            "url": "https://raw.githubusercontent.com/example/data/main/ranked-champions/latest.json",
+            "lane": "middle",
+            "sortBy": "overall"
         }))
+        .expect("frontend-shaped ranked champion refresh command deserializes");
+
+        assert_eq!(
+            command.url.as_deref(),
+            Some("https://raw.githubusercontent.com/example/data/main/ranked-champions/latest.json")
+        );
+        assert_eq!(command.lane, Some(RankedChampionLane::Middle));
+        assert_eq!(command.sort_by, Some(RankedChampionSort::Overall));
+    }
+
+    #[test]
+    fn ranked_champion_stats_serializes_frontend_shape() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+        let value = serde_json::to_value(
+            get_ranked_champion_stats(
+                &state,
+                RankedChampionStatsCommand {
+                    lane: Some(RankedChampionLane::Bottom),
+                    sort_by: Some(RankedChampionSort::PickRate),
+                },
+            )
+            .expect("ranked champion stats"),
+        )
         .expect("ranked champion stats serializes");
 
         assert_eq!(value["lane"], "bottom");
         assert_eq!(value["sortBy"], "pickRate");
         assert_eq!(value["records"][0]["lane"], "bottom");
         assert!(value["records"][0]["pickRate"].as_f64().unwrap() >= 0.0);
+        assert_eq!(value["isCached"], false);
         assert!(value["records"][0].get("puuid").is_none());
         assert!(value["records"][0].get("authorization").is_none());
         assert!(value["records"][0].get("password").is_none());
+
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[test]
