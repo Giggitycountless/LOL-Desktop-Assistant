@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useAppState } from "../state/AppStateProvider";
-import type { RankedChampionLane, RankedChampionSort, RankedChampionStat } from "../backend/types";
+import type { RankedChampionDataStatus, RankedChampionLane, RankedChampionSort, RankedChampionStat } from "../backend/types";
 
 const lanes: Array<{ id: RankedChampionLane; label: string; shortLabel: string }> = [
   { id: "top", label: "Top", shortLabel: "TOP" },
@@ -31,8 +31,10 @@ export function RankedChampions() {
   const [sortBy, setSortBy] = useState<RankedChampionSort>("overall");
   const activeSort = useMemo(() => sorts.find((sort) => sort.id === sortBy) ?? sorts[0], [sortBy]);
   const records = rankedChampionStats?.records ?? [];
+  const status = rankedChampionStats?.dataStatus ?? "sample";
+  const statusView = dataStatusView(status);
   const metadata = rankedChampionStats
-    ? [rankedChampionStats.patch, rankedChampionStats.region, rankedChampionStats.tier].filter(Boolean).join(" / ")
+    ? [rankedChampionStats.patch, rankedChampionStats.region, rankedChampionStats.queue, rankedChampionStats.tier].filter(Boolean).join(" / ")
     : "";
 
   useEffect(() => {
@@ -111,39 +113,42 @@ export function RankedChampions() {
         <section className="overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
             <div>
-              <h2 className="text-base font-semibold text-zinc-950">{laneLabel(lane)} champions</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-semibold text-zinc-950">{laneLabel(lane)} champions</h2>
+                <span className={["rounded px-2 py-0.5 text-xs font-bold", statusView.className].join(" ")}>
+                  {statusView.label}
+                </span>
+              </div>
               <p className="mt-1 text-sm text-zinc-500">
-                Sorted by {activeSort.label.toLowerCase()} from backend-owned ranked data.
+                Sorted by {activeSort.label.toLowerCase()} · {rankedChampionStats?.source ?? "Local ranked data sample"}
               </p>
             </div>
             <div className="text-right">
-              <p className="text-sm font-semibold text-zinc-700">
-                {rankedChampionStats?.source ?? "Local ranked data sample"}
-                {rankedChampionStats?.isCached && (
-                  <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">Cached</span>
-                )}
-              </p>
-              <p className="mt-1 text-xs font-medium text-zinc-500">
-                {metadata ? `${metadata} / ` : ""}
-                {rankedChampionStats?.updatedAt ?? "pending"}
-              </p>
+              <p className="text-sm font-semibold text-zinc-700">{metadata || "Sample data"}</p>
+              <p className="mt-1 text-xs font-medium text-zinc-500">{timeSummary(rankedChampionStats)}</p>
             </div>
           </div>
 
+          {rankedChampionStats?.statusMessage && (
+            <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-3 text-sm font-medium text-zinc-600">
+              {rankedChampionStats.statusMessage}
+            </div>
+          )}
+
           <div className="overflow-x-auto">
-            <div className="grid min-w-[52rem] grid-cols-[4rem_minmax(14rem,1.4fr)_6rem_6rem_6rem_6rem_7rem] gap-3 border-b border-zinc-200 bg-zinc-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+            <div className="grid min-w-[64rem] grid-cols-[4rem_minmax(14rem,1.3fr)_7rem_8rem_8rem_8rem_11rem] gap-3 border-b border-zinc-200 bg-zinc-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
               <span>Rank</span>
               <span>Champion</span>
               <span>Overall</span>
               <span>Win</span>
-              <span>Ban</span>
               <span>Pick</span>
-              <span>Games</span>
+              <span>Ban</span>
+              <span>Sample</span>
             </div>
 
             {records.length === 0 && (
               <div className="px-5 py-8 text-sm text-zinc-500">
-                Ranked champion data is unavailable. Refresh keeps the previous cache when remote data cannot load.
+                No ranked champion data is available for this lane.
               </div>
             )}
 
@@ -175,7 +180,7 @@ function ChampionRow({
   record: RankedChampionStat;
 }) {
   return (
-    <div className="grid min-w-[52rem] grid-cols-[4rem_minmax(14rem,1.4fr)_6rem_6rem_6rem_6rem_7rem] items-center gap-3 border-b border-zinc-100 px-5 py-3 last:border-b-0">
+    <div className="grid min-w-[64rem] grid-cols-[4rem_minmax(14rem,1.3fr)_7rem_8rem_8rem_8rem_11rem] items-center gap-3 border-b border-zinc-100 px-5 py-3 last:border-b-0">
       <span className="text-sm font-bold text-zinc-500">#{rank}</span>
       <div className="flex min-w-0 items-center gap-3">
         <ChampionImage championName={record.championName} imageUrl={imageUrl} />
@@ -186,24 +191,36 @@ function ChampionRow({
       </div>
       <Metric value={record.overallScore} suffix="" isActive={highlightMetric === "overallScore"} />
       <Metric value={record.winRate} suffix="%" isActive={highlightMetric === "winRate"} />
-      <Metric value={record.banRate} suffix="%" isActive={highlightMetric === "banRate"} />
       <Metric value={record.pickRate} suffix="%" isActive={highlightMetric === "pickRate"} />
-      <span className="text-sm font-semibold text-zinc-700">{formatGames(record.games)}</span>
+      <Metric value={record.banRate} suffix="%" isActive={highlightMetric === "banRate"} />
+      <div className="text-sm font-semibold text-zinc-700">
+        <p>{formatGames(record.games)} games</p>
+        <p className="mt-1 text-xs font-medium text-zinc-500">
+          {formatGames(record.wins)}W · {formatGames(record.picks)}P · {formatGames(record.bans)}B
+        </p>
+      </div>
     </div>
   );
 }
 
 function Metric({ isActive, suffix, value }: { isActive: boolean; suffix: string; value: number }) {
+  const width = `${Math.max(0, Math.min(100, value))}%`;
+
   return (
-    <span
-      className={[
-        "w-fit rounded-md px-2 py-1 text-sm font-bold",
-        isActive ? "bg-rose-100 text-rose-800" : "bg-zinc-100 text-zinc-700",
-      ].join(" ")}
-    >
-      {value.toFixed(1)}
-      {suffix}
-    </span>
+    <div className="min-w-0">
+      <div
+        className={[
+          "mb-1 h-1.5 overflow-hidden rounded-full",
+          isActive ? "bg-rose-100" : "bg-zinc-100",
+        ].join(" ")}
+      >
+        <div className={["h-full rounded-full", isActive ? "bg-rose-700" : "bg-zinc-400"].join(" ")} style={{ width }} />
+      </div>
+      <span className={["text-sm font-bold", isActive ? "text-rose-800" : "text-zinc-700"].join(" ")}>
+        {value.toFixed(1)}
+        {suffix}
+      </span>
+    </div>
   );
 }
 
@@ -262,10 +279,47 @@ function laneLabel(lane: RankedChampionLane) {
 
 function formatGames(value: number) {
   if (value >= 1000) {
-    return `${Math.round(value / 1000)}k`;
+    return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
   }
 
   return String(value);
+}
+
+function dataStatusView(status: RankedChampionDataStatus) {
+  switch (status) {
+    case "fresh":
+      return { label: "Fresh", className: "bg-emerald-100 text-emerald-800" };
+    case "cached":
+      return { label: "Cached", className: "bg-sky-100 text-sky-800" };
+    case "staleCache":
+      return { label: "Stale cache", className: "bg-amber-100 text-amber-800" };
+    case "sample":
+      return { label: "Sample", className: "bg-zinc-100 text-zinc-700" };
+  }
+}
+
+function timeSummary(
+  stats:
+    | {
+        generatedAt: string | null;
+        importedAt: string | null;
+        updatedAt: string;
+      }
+    | null,
+) {
+  if (!stats) {
+    return "pending";
+  }
+
+  const parts = [];
+  if (stats.generatedAt) {
+    parts.push(`generated ${stats.generatedAt}`);
+  }
+  if (stats.importedAt) {
+    parts.push(`cached ${stats.importedAt}`);
+  }
+
+  return parts.length > 0 ? parts.join(" / ") : `updated ${stats.updatedAt}`;
 }
 
 function initials(value: string) {

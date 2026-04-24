@@ -161,8 +161,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setIsRankedChampionStatsLoading(true);
 
     try {
-      setRankedChampionStats(await refreshRankedChampionStats(input));
-      setFeedback({ kind: "success", message: "Ranked champion data refreshed" });
+      const response = await refreshRankedChampionStats(input);
+      setRankedChampionStats(response);
+      setFeedback({
+        kind: response.dataStatus === "staleCache" ? "error" : "success",
+        message: response.statusMessage ?? "Ranked champion data refreshed",
+      });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
