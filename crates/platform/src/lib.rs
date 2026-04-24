@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
 use tauri::{Manager, Runtime};
 
-const DEFAULT_RANKED_CHAMPION_DATA_URL: &str = "https://raw.githubusercontent.com/Giggitycountless/lol-desktop-assistant-data/main/ranked-champions/latest.json";
+const DEFAULT_RANKED_CHAMPION_DATA_URL: &str = "https://raw.githubusercontent.com/Giggitycountless/LOL-Desktop-Assistant/main/data/ranked-champions/latest.json";
 
 #[derive(Debug, Clone)]
 pub struct AppState {

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Giggitycountless/LOL-Desktop-Assistant/main/data/ranked-champions/schema.json",
+  "title": "LoL Desktop Assistant Ranked Champion Data",
+  "type": "object",
+  "required": ["formatVersion", "champions"],
+  "properties": {
+    "formatVersion": {
+      "const": 1
+    },
+    "source": {
+      "type": "string"
+    },
+    "patch": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string"
+    },
+    "queue": {
+      "type": "string"
+    },
+    "tier": {
+      "type": "string"
+    },
+    "generatedAt": {
+      "type": "string"
+    },
+    "champions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["championId", "championName", "lane", "games", "winRate", "pickRate", "banRate"],
+        "properties": {
+          "championId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "championName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "championAlias": {
+            "type": "string"
+          },
+          "lane": {
+            "enum": ["top", "jungle", "middle", "bottom", "support", "mid", "bot", "sup", "adc"]
+          },
+          "games": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "wins": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "picks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bans": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "winRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "pickRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "banRate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "overallScore": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
