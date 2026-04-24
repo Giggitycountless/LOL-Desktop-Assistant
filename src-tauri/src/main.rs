@@ -1,4 +1,8 @@
-use tauri::State;
+use tauri::{Manager, State};
+use tauri_plugin_global_shortcut::ShortcutState;
+
+const SELF_HISTORY_OVERLAY_WINDOW_LABEL: &str = "self-history-overlay";
+const SELF_HISTORY_OVERLAY_SHORTCUT: &str = "Shift+Tab";
 
 #[tauri::command]
 fn healthcheck(state: State<'_, platform::AppState>) -> domain::HealthReport {
@@ -160,6 +164,33 @@ fn clear_player_note(
 
 fn main() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut(SELF_HISTORY_OVERLAY_SHORTCUT)
+                .expect("self history overlay shortcut registers")
+                .with_handler(|app, _shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+
+                    let Some(window) = app.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL)
+                    else {
+                        return;
+                    };
+
+                    match window.is_visible() {
+                        Ok(true) => {
+                            let _ = window.hide();
+                        }
+                        Ok(false) => {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                        Err(_) => {}
+                    }
+                })
+                .build(),
+        )
         .setup(|app| platform::setup_app(app))
         .invoke_handler(tauri::generate_handler![
             healthcheck,

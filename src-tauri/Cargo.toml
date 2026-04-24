@@ -11,3 +11,4 @@ tauri-build.workspace = true
 domain.workspace = true
 platform.workspace = true
 tauri.workspace = true
+tauri-plugin-global-shortcut.workspace = true
