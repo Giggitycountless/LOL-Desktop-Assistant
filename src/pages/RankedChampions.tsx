@@ -25,11 +25,15 @@ export function RankedChampions() {
     loadLeagueChampionIcon,
     loadRankedChampionStats,
     rankedChampionStats,
+    refreshRankedChampionStats,
   } = useAppState();
   const [lane, setLane] = useState<RankedChampionLane>("top");
   const [sortBy, setSortBy] = useState<RankedChampionSort>("overall");
   const activeSort = useMemo(() => sorts.find((sort) => sort.id === sortBy) ?? sorts[0], [sortBy]);
   const records = rankedChampionStats?.records ?? [];
+  const metadata = rankedChampionStats
+    ? [rankedChampionStats.patch, rankedChampionStats.region, rankedChampionStats.tier].filter(Boolean).join(" / ")
+    : "";
 
   useEffect(() => {
     void loadRankedChampionStats({ lane, sortBy });
@@ -49,8 +53,19 @@ export function RankedChampions() {
             <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Ranked Champions</p>
             <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Ranked Champion Data</h1>
           </div>
-          <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-600">
-            {isRankedChampionStatsLoading ? "Loading" : `${records.length} champions`}
+          <div className="flex items-center gap-2">
+            <button
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isRankedChampionStatsLoading}
+              onClick={() => void refreshRankedChampionStats({ lane, sortBy })}
+              type="button"
+            >
+              <RefreshIcon />
+              <span>{isRankedChampionStatsLoading ? "Refreshing" : "Refresh"}</span>
+            </button>
+            <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-600">
+              {isRankedChampionStatsLoading ? "Loading" : `${records.length} champions`}
+            </div>
           </div>
         </header>
 
@@ -98,12 +113,21 @@ export function RankedChampions() {
             <div>
               <h2 className="text-base font-semibold text-zinc-950">{laneLabel(lane)} champions</h2>
               <p className="mt-1 text-sm text-zinc-500">
-                Sorted by {activeSort.label.toLowerCase()} from a backend-owned local ranked data sample.
+                Sorted by {activeSort.label.toLowerCase()} from backend-owned ranked data.
               </p>
             </div>
-            <p className="text-sm font-medium text-zinc-500">
-              {rankedChampionStats?.source ?? "Local ranked data sample"} · {rankedChampionStats?.updatedAt ?? "pending"}
-            </p>
+            <div className="text-right">
+              <p className="text-sm font-semibold text-zinc-700">
+                {rankedChampionStats?.source ?? "Local ranked data sample"}
+                {rankedChampionStats?.isCached && (
+                  <span className="ml-2 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">Cached</span>
+                )}
+              </p>
+              <p className="mt-1 text-xs font-medium text-zinc-500">
+                {metadata ? `${metadata} / ` : ""}
+                {rankedChampionStats?.updatedAt ?? "pending"}
+              </p>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -119,7 +143,7 @@ export function RankedChampions() {
 
             {records.length === 0 && (
               <div className="px-5 py-8 text-sm text-zinc-500">
-                Ranked champion data is unavailable.
+                Ranked champion data is unavailable. Refresh keeps the previous cache when remote data cannot load.
               </div>
             )}
 
@@ -192,6 +216,16 @@ function ChampionImage({ championName, imageUrl }: { championName: string; image
     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500">
       {initials(championName)}
     </div>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none">
+      <path d="M20 12a8 8 0 0 1-13.4 5.9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M4 12A8 8 0 0 1 17.4 6.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M7 18H4v-3M17 6h3v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

@@ -12,6 +12,7 @@ import type {
   ParticipantPublicProfileInput,
   PlayerNoteView,
   PostMatchDetail,
+  RankedChampionRefreshInput,
   RankedChampionStatsInput,
   RankedChampionStatsResponse,
   SavePlayerNoteInput,
@@ -29,6 +30,12 @@ export function fetchLeagueSelfSnapshot(input: LeagueSelfSnapshotInput = { match
 
 export function fetchRankedChampionStats(input: RankedChampionStatsInput): Promise<RankedChampionStatsResponse> {
   return callBackend<RankedChampionStatsResponse>("get_ranked_champion_stats", {
+    input,
+  });
+}
+
+export function refreshRankedChampionStats(input: RankedChampionRefreshInput): Promise<RankedChampionStatsResponse> {
+  return callBackend<RankedChampionStatsResponse>("refresh_ranked_champion_stats", {
     input,
   });
 }

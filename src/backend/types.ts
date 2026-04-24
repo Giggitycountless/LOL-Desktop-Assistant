@@ -100,12 +100,16 @@ export type RankedQueueSummary = {
 export type RankedChampionStat = {
   championId: number;
   championName: string;
+  championAlias: string | null;
   lane: RankedChampionLane;
   winRate: number;
   pickRate: number;
   banRate: number;
   overallScore: number;
   games: number;
+  wins: number;
+  picks: number;
+  bans: number;
 };
 
 export type RankedChampionStatsInput = {
@@ -119,6 +123,15 @@ export type RankedChampionStatsResponse = {
   records: RankedChampionStat[];
   source: string;
   updatedAt: string;
+  patch: string | null;
+  region: string | null;
+  queue: string | null;
+  tier: string | null;
+  isCached: boolean;
+};
+
+export type RankedChampionRefreshInput = RankedChampionStatsInput & {
+  url?: string | null;
 };
 
 export type RecentMatchSummary = {

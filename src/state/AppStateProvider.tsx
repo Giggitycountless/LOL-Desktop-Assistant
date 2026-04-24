@@ -12,6 +12,7 @@ import {
   fetchPostMatchDetail,
   fetchPostMatchParticipantProfile,
   fetchRankedChampionStats,
+  refreshRankedChampionStats,
   savePlayerNote as savePlayerNoteCommand,
 } from "../backend/leagueClient";
 import { saveSettings } from "../backend/settings";
@@ -31,6 +32,7 @@ import type {
   ParticipantPublicProfileInput,
   PlayerNoteView,
   PostMatchDetail,
+  RankedChampionRefreshInput,
   RankedChampionStatsInput,
   RankedChampionStatsResponse,
   SavePlayerNoteInput,
@@ -65,6 +67,7 @@ type AppStateContextValue = {
   loadActivityEntries: (input: ActivityListInput) => Promise<boolean>;
   refreshLeagueClient: (input?: LeagueSelfSnapshotInput) => Promise<boolean>;
   loadRankedChampionStats: (input: RankedChampionStatsInput) => Promise<boolean>;
+  refreshRankedChampionStats: (input: RankedChampionRefreshInput) => Promise<boolean>;
   saveSettings: (settings: SaveSettingsInput) => Promise<boolean>;
   createActivityNote: (input: ActivityNoteInput) => Promise<boolean>;
   clearActivityEntries: (confirm: boolean) => Promise<boolean>;
@@ -145,6 +148,21 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
     try {
       setRankedChampionStats(await fetchRankedChampionStats(input));
+      return true;
+    } catch (caught: unknown) {
+      setFeedback({ kind: "error", message: errorMessage(caught) });
+      return false;
+    } finally {
+      setIsRankedChampionStatsLoading(false);
+    }
+  }, []);
+
+  const refreshRankedChampionStatsAction = useCallback(async (input: RankedChampionRefreshInput) => {
+    setIsRankedChampionStatsLoading(true);
+
+    try {
+      setRankedChampionStats(await refreshRankedChampionStats(input));
+      setFeedback({ kind: "success", message: "Ranked champion data refreshed" });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
@@ -416,6 +434,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadActivityEntries: loadActivityEntriesAction,
       refreshLeagueClient: refreshLeagueClientAction,
       loadRankedChampionStats: loadRankedChampionStatsAction,
+      refreshRankedChampionStats: refreshRankedChampionStatsAction,
       saveSettings: saveSettingsAction,
       createActivityNote: createActivityNoteAction,
       clearActivityEntries: clearActivityEntriesAction,
@@ -455,6 +474,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       rankedChampionStats,
       refresh,
       refreshLeagueClientAction,
+      refreshRankedChampionStatsAction,
       savePlayerNoteAction,
       saveSettingsAction,
       snapshot,
