@@ -6,10 +6,12 @@ import { Matches } from "./pages/Matches";
 import { ParticipantProfileWindow } from "./pages/ParticipantProfileWindow";
 import { Profile } from "./pages/Profile";
 import { RankedChampions } from "./pages/RankedChampions";
+import { SelfHistoryOverlay } from "./pages/SelfHistoryOverlay";
 import { Settings } from "./pages/Settings";
 import { AppStateProvider, useAppState } from "./state/AppStateProvider";
 import type { StartupPage } from "./backend/types";
 import { selectionFromParticipantProfileHash } from "./windows/participantProfileWindow";
+import { isSelfHistoryOverlayHash } from "./windows/selfHistoryOverlayWindow";
 
 type Page = StartupPage | "profile" | "matches" | "ranked";
 
@@ -24,10 +26,17 @@ const pages: Array<{ id: Page; label: string; icon: IconName }> = [
 
 export function App() {
   const participantProfileSelection = selectionFromParticipantProfileHash(window.location.hash);
+  const isSelfHistoryOverlay = isSelfHistoryOverlayHash(window.location.hash);
 
   return (
     <AppStateProvider>
-      {participantProfileSelection ? <ParticipantProfileWindow initialSelection={participantProfileSelection} /> : <AppShell />}
+      {participantProfileSelection ? (
+        <ParticipantProfileWindow initialSelection={participantProfileSelection} />
+      ) : isSelfHistoryOverlay ? (
+        <SelfHistoryOverlay />
+      ) : (
+        <AppShell />
+      )}
     </AppStateProvider>
   );
 }
