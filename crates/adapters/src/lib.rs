@@ -1,11 +1,14 @@
 use std::{collections::HashMap, fmt, fs, path::PathBuf, time::Duration};
 
-use application::{LeagueClientReadError, LeagueClientReader};
+use application::{
+    LeagueClientReadError, LeagueClientReader, RankedChampionDataError, RankedChampionDataProvider,
+    RankedChampionRefreshInput,
+};
 use domain::{
     CurrentSummonerProfile, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
     LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset,
-    LeagueSelfData, MatchResult, ParticipantRecentStats, RankedQueue, RankedQueueSummary,
-    RecentMatchSummary,
+    LeagueSelfData, MatchResult, ParticipantRecentStats, RankedChampionDataSnapshot,
+    RankedChampionLane, RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::Deserialize;
@@ -19,9 +22,266 @@ const PROFILE_ICON_MIME: &str = "image/jpeg";
 const CHAMPION_ICON_MIME: &str = "image/png";
 const GAME_ASSET_MIME: &str = "image/png";
 const MAX_COMPLETED_MATCH_SCAN: i64 = 20;
+const RANKED_CHAMPION_REMOTE_TIMEOUT: Duration = Duration::from_secs(5);
+const RANKED_CHAMPION_FORMAT_VERSION: i64 = 1;
 
 pub fn layer_name() -> &'static str {
     "adapters"
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteRankedChampionJsonProvider {
+    default_url: Option<String>,
+    http_client: Client,
+}
+
+impl RemoteRankedChampionJsonProvider {
+    pub fn new(default_url: impl Into<String>) -> Self {
+        Self {
+            default_url: Some(default_url.into()),
+            http_client: ranked_champion_http_client(),
+        }
+    }
+
+    pub fn without_default_url() -> Self {
+        Self {
+            default_url: None,
+            http_client: ranked_champion_http_client(),
+        }
+    }
+}
+
+impl RankedChampionDataProvider for RemoteRankedChampionJsonProvider {
+    fn fetch_ranked_champion_snapshot(
+        &self,
+        input: RankedChampionRefreshInput,
+    ) -> Result<RankedChampionDataSnapshot, RankedChampionDataError> {
+        let url = input
+            .url
+            .or_else(|| self.default_url.clone())
+            .ok_or_else(|| {
+                RankedChampionDataError::InvalidData(
+                    "Ranked champion data URL is required".to_string(),
+                )
+            })?;
+
+        if !url.starts_with("https://") {
+            return Err(RankedChampionDataError::InvalidData(
+                "Ranked champion data URL must use HTTPS".to_string(),
+            ));
+        }
+
+        let response = self
+            .http_client
+            .get(url)
+            .send()
+            .map_err(|_| {
+                RankedChampionDataError::Unavailable(
+                    "Ranked champion data could not be downloaded".to_string(),
+                )
+            })?;
+
+        if !response.status().is_success() {
+            return Err(RankedChampionDataError::Unavailable(format!(
+                "Ranked champion data returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        let body = response.text().map_err(|_| {
+            RankedChampionDataError::Unavailable(
+                "Ranked champion data response could not be read".to_string(),
+            )
+        })?;
+
+        parse_ranked_champion_snapshot_json(body.as_str())
+    }
+}
+
+pub fn parse_ranked_champion_snapshot_json(
+    json: &str,
+) -> Result<RankedChampionDataSnapshot, RankedChampionDataError> {
+    let document: RankedChampionJsonDocument = serde_json::from_str(json).map_err(|error| {
+        RankedChampionDataError::InvalidData(format!(
+            "Ranked champion data JSON is invalid: {error}"
+        ))
+    })?;
+
+    if document.format_version != RANKED_CHAMPION_FORMAT_VERSION {
+        return Err(RankedChampionDataError::InvalidData(format!(
+            "Unsupported ranked champion data format version {}",
+            document.format_version
+        )));
+    }
+
+    if document.champions.is_empty() {
+        return Err(RankedChampionDataError::InvalidData(
+            "Ranked champion data must contain at least one champion".to_string(),
+        ));
+    }
+
+    let mut records = Vec::with_capacity(document.champions.len());
+    for champion in document.champions {
+        records.push(normalize_ranked_champion_entry(champion)?);
+    }
+
+    Ok(RankedChampionDataSnapshot {
+        source: optional_non_empty(document.source).unwrap_or_else(|| "remoteJson".to_string()),
+        patch: optional_non_empty(document.patch),
+        region: optional_non_empty(document.region),
+        queue: optional_non_empty(document.queue),
+        tier: optional_non_empty(document.tier),
+        generated_at: optional_non_empty(document.generated_at),
+        imported_at: unix_timestamp_seconds(),
+        records,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankedChampionJsonDocument {
+    format_version: i64,
+    source: Option<String>,
+    patch: Option<String>,
+    region: Option<String>,
+    queue: Option<String>,
+    tier: Option<String>,
+    generated_at: Option<String>,
+    champions: Vec<RankedChampionJsonEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankedChampionJsonEntry {
+    champion_id: i64,
+    champion_name: String,
+    champion_alias: Option<String>,
+    lane: String,
+    games: i64,
+    wins: Option<i64>,
+    picks: Option<i64>,
+    bans: Option<i64>,
+    win_rate: f64,
+    pick_rate: f64,
+    ban_rate: f64,
+    overall_score: Option<f64>,
+}
+
+fn normalize_ranked_champion_entry(
+    entry: RankedChampionJsonEntry,
+) -> Result<RankedChampionStat, RankedChampionDataError> {
+    if entry.champion_id <= 0 {
+        return Err(RankedChampionDataError::InvalidData(
+            "Ranked champion id must be positive".to_string(),
+        ));
+    }
+
+    let champion_name = optional_non_empty(Some(entry.champion_name)).ok_or_else(|| {
+        RankedChampionDataError::InvalidData("Ranked champion name is required".to_string())
+    })?;
+    let lane = ranked_lane_from_remote(entry.lane.as_str()).ok_or_else(|| {
+        RankedChampionDataError::InvalidData(format!(
+            "Ranked champion lane is invalid: {}",
+            entry.lane
+        ))
+    })?;
+
+    validate_rate(entry.win_rate, "winRate")?;
+    validate_rate(entry.pick_rate, "pickRate")?;
+    validate_rate(entry.ban_rate, "banRate")?;
+
+    if entry.games < 0 {
+        return Err(RankedChampionDataError::InvalidData(
+            "Ranked champion games must not be negative".to_string(),
+        ));
+    }
+
+    let wins = entry
+        .wins
+        .unwrap_or_else(|| ((entry.games as f64) * (entry.win_rate / 100.0)).round() as i64);
+    let picks = entry.picks.unwrap_or(entry.games);
+    let bans = entry
+        .bans
+        .unwrap_or_else(|| ((entry.games as f64) * (entry.ban_rate / 100.0)).round() as i64);
+    for (label, value) in [("wins", wins), ("picks", picks), ("bans", bans)] {
+        if value < 0 {
+            return Err(RankedChampionDataError::InvalidData(format!(
+                "Ranked champion {label} must not be negative"
+            )));
+        }
+    }
+
+    let overall_score = entry
+        .overall_score
+        .unwrap_or_else(|| ranked_overall_score(entry.win_rate, entry.pick_rate, entry.ban_rate));
+
+    Ok(RankedChampionStat {
+        champion_id: entry.champion_id,
+        champion_name,
+        champion_alias: optional_non_empty(entry.champion_alias),
+        lane,
+        win_rate: round_to_tenth(entry.win_rate),
+        pick_rate: round_to_tenth(entry.pick_rate),
+        ban_rate: round_to_tenth(entry.ban_rate),
+        overall_score: round_to_tenth(overall_score),
+        games: entry.games,
+        wins,
+        picks,
+        bans,
+    })
+}
+
+fn ranked_lane_from_remote(value: &str) -> Option<RankedChampionLane> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "top" => Some(RankedChampionLane::Top),
+        "jungle" | "jug" => Some(RankedChampionLane::Jungle),
+        "middle" | "mid" => Some(RankedChampionLane::Middle),
+        "bottom" | "bot" | "adc" => Some(RankedChampionLane::Bottom),
+        "support" | "sup" => Some(RankedChampionLane::Support),
+        _ => None,
+    }
+}
+
+fn validate_rate(value: f64, label: &str) -> Result<(), RankedChampionDataError> {
+    if !(0.0..=100.0).contains(&value) || !value.is_finite() {
+        return Err(RankedChampionDataError::InvalidData(format!(
+            "Ranked champion {label} must be between 0 and 100"
+        )));
+    }
+
+    Ok(())
+}
+
+fn ranked_overall_score(win_rate: f64, pick_rate: f64, ban_rate: f64) -> f64 {
+    round_to_tenth((win_rate * 0.55) + (pick_rate * 0.25) + (ban_rate * 0.20))
+}
+
+fn ranked_champion_http_client() -> Client {
+    Client::builder()
+        .timeout(RANKED_CHAMPION_REMOTE_TIMEOUT)
+        .connect_timeout(RANKED_CHAMPION_REMOTE_TIMEOUT)
+        .build()
+        .expect("ranked champion HTTP client builds")
+}
+
+fn optional_non_empty(value: Option<String>) -> Option<String> {
+    let value = value?;
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn unix_timestamp_seconds() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1535,6 +1795,66 @@ mod tests {
     use std::path::Path;
 
     const TEST_LOCKFILE_VALUE: &str = "not-a-real-test-value";
+
+    #[test]
+    fn parses_ranked_champion_json_snapshot() {
+        let snapshot = parse_ranked_champion_snapshot_json(
+            r#"{
+                "formatVersion": 1,
+                "source": "test-json",
+                "patch": "26.08",
+                "region": "KR",
+                "queue": "RANKED_SOLO_5X5",
+                "tier": "EMERALD_PLUS",
+                "generatedAt": "2026-04-25T00:00:00Z",
+                "champions": [
+                    {
+                        "championId": 103,
+                        "championName": "Ahri",
+                        "championAlias": "Ahri",
+                        "lane": "mid",
+                        "games": 1000,
+                        "winRate": 51.4,
+                        "pickRate": 10.2,
+                        "banRate": 8.0
+                    }
+                ]
+            }"#,
+        )
+        .expect("ranked champion json parses");
+
+        assert_eq!(snapshot.source, "test-json");
+        assert_eq!(snapshot.records.len(), 1);
+        assert_eq!(snapshot.records[0].lane, RankedChampionLane::Middle);
+        assert_eq!(snapshot.records[0].wins, 514);
+        assert_eq!(snapshot.records[0].picks, 1000);
+        assert_eq!(snapshot.records[0].bans, 80);
+        assert!(snapshot.imported_at.parse::<u64>().is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_ranked_champion_json_snapshot() {
+        let error = parse_ranked_champion_snapshot_json(
+            r#"{
+                "formatVersion": 1,
+                "champions": [
+                    {
+                        "championId": 103,
+                        "championName": "Ahri",
+                        "lane": "river",
+                        "games": 1000,
+                        "winRate": 51.4,
+                        "pickRate": 10.2,
+                        "banRate": 8.0
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("invalid ranked champion json is rejected");
+
+        assert!(matches!(error, RankedChampionDataError::InvalidData(_)));
+        assert!(!error.to_string().contains("Authorization"));
+    }
 
     #[test]
     fn parses_valid_lockfile() {

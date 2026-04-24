@@ -327,6 +327,13 @@ pub trait LeagueClientReader {
     ) -> Result<ParticipantRecentStats, LeagueClientReadError>;
 }
 
+pub trait RankedChampionDataProvider {
+    fn fetch_ranked_champion_snapshot(
+        &self,
+        input: RankedChampionRefreshInput,
+    ) -> Result<RankedChampionDataSnapshot, RankedChampionDataError>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeagueClientReadError {
     ClientUnavailable(String),
@@ -377,6 +384,27 @@ pub struct LeagueSelfSnapshotInput {
 pub struct RankedChampionStatsInput {
     pub lane: Option<RankedChampionLane>,
     pub sort_by: Option<RankedChampionSort>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedChampionRefreshInput {
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RankedChampionDataError {
+    Unavailable(String),
+    InvalidData(String),
+}
+
+impl fmt::Display for RankedChampionDataError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(message) | Self::InvalidData(message) => {
+                formatter.write_str(message)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -726,6 +754,37 @@ pub fn get_ranked_champion_stats(input: RankedChampionStatsInput) -> RankedChamp
         tier: Some("sample".to_string()),
         is_cached: false,
     }
+}
+
+pub fn get_ranked_champion_stats_from_store(
+    store: &impl AppStore,
+    input: RankedChampionStatsInput,
+) -> Result<RankedChampionStatsResponse, ApplicationError> {
+    match store
+        .latest_ranked_champion_snapshot()
+        .map_err(ApplicationError::Storage)?
+    {
+        Some(snapshot) => Ok(ranked_response_from_snapshot(snapshot, input, true)),
+        None => Ok(get_ranked_champion_stats(input)),
+    }
+}
+
+pub fn refresh_ranked_champion_stats(
+    store: &impl AppStore,
+    provider: &impl RankedChampionDataProvider,
+    input: RankedChampionRefreshInput,
+    stats_input: RankedChampionStatsInput,
+) -> Result<RankedChampionStatsResponse, ApplicationError> {
+    let mut snapshot = provider
+        .fetch_ranked_champion_snapshot(input)
+        .map_err(ranked_provider_error)?;
+    snapshot.imported_at = unix_timestamp_seconds();
+
+    let saved = store
+        .replace_ranked_champion_snapshot(snapshot)
+        .map_err(ApplicationError::Storage)?;
+
+    Ok(ranked_response_from_snapshot(saved, stats_input, true))
 }
 
 pub fn get_league_profile_icon(
@@ -1430,6 +1489,44 @@ fn ranked_champion_stat(seed: &RankedChampionSeed) -> RankedChampionStat {
     }
 }
 
+fn ranked_response_from_snapshot(
+    snapshot: RankedChampionDataSnapshot,
+    input: RankedChampionStatsInput,
+    is_cached: bool,
+) -> RankedChampionStatsResponse {
+    let sort_by = input.sort_by.unwrap_or(RankedChampionSort::Overall);
+    let mut records: Vec<RankedChampionStat> = snapshot
+        .records
+        .into_iter()
+        .filter(|record| input.lane.is_none_or(|lane| record.lane == lane))
+        .collect();
+
+    records.sort_by(|left, right| compare_ranked_champions(left, right, sort_by));
+
+    RankedChampionStatsResponse {
+        lane: input.lane,
+        sort_by,
+        records,
+        source: snapshot.source,
+        updated_at: snapshot
+            .generated_at
+            .clone()
+            .unwrap_or_else(|| snapshot.imported_at.clone()),
+        patch: snapshot.patch,
+        region: snapshot.region,
+        queue: snapshot.queue,
+        tier: snapshot.tier,
+        is_cached,
+    }
+}
+
+fn ranked_provider_error(error: RankedChampionDataError) -> ApplicationError {
+    match error {
+        RankedChampionDataError::Unavailable(message)
+        | RankedChampionDataError::InvalidData(message) => ApplicationError::Integration(message),
+    }
+}
+
 fn ranked_overall_score(win_rate: f64, pick_rate: f64, ban_rate: f64) -> f64 {
     round_to_tenth((win_rate * 0.55) + (pick_rate * 0.25) + (ban_rate * 0.20))
 }
@@ -1739,6 +1836,56 @@ mod tests {
                 ranked_sort_value(&records[0], sort_by) >= ranked_sort_value(&records[1], sort_by)
             }));
         }
+    }
+
+    #[test]
+    fn ranked_champion_stats_reads_cached_snapshot_when_available() {
+        let store = FakeStore::new(default_settings());
+        store
+            .ranked_snapshot
+            .replace(Some(sample_ranked_snapshot("cached-json")));
+
+        let response = get_ranked_champion_stats_from_store(
+            &store,
+            RankedChampionStatsInput {
+                lane: Some(RankedChampionLane::Middle),
+                sort_by: Some(RankedChampionSort::Overall),
+            },
+        )
+        .expect("ranked champion stats reads");
+
+        assert_eq!(response.source, "cached-json");
+        assert_eq!(response.patch.as_deref(), Some("26.08"));
+        assert!(response.is_cached);
+        assert_eq!(response.records.len(), 1);
+        assert_eq!(response.records[0].champion_name, "Ahri");
+    }
+
+    #[test]
+    fn ranked_champion_refresh_persists_provider_snapshot() {
+        let store = FakeStore::new(default_settings());
+        let provider = FakeRankedChampionProvider {
+            snapshot: sample_ranked_snapshot("remote-json"),
+        };
+
+        let response = refresh_ranked_champion_stats(
+            &store,
+            &provider,
+            RankedChampionRefreshInput { url: None },
+            RankedChampionStatsInput {
+                lane: Some(RankedChampionLane::Middle),
+                sort_by: Some(RankedChampionSort::WinRate),
+            },
+        )
+        .expect("ranked champion stats refreshes");
+
+        assert_eq!(response.source, "remote-json");
+        assert!(response.is_cached);
+        assert!(store.ranked_snapshot.borrow().is_some());
+        assert_eq!(
+            store.ranked_snapshot.borrow().as_ref().unwrap().source,
+            "remote-json"
+        );
     }
 
     #[test]
@@ -2207,6 +2354,19 @@ mod tests {
         }
     }
 
+    struct FakeRankedChampionProvider {
+        snapshot: RankedChampionDataSnapshot,
+    }
+
+    impl RankedChampionDataProvider for FakeRankedChampionProvider {
+        fn fetch_ranked_champion_snapshot(
+            &self,
+            _input: RankedChampionRefreshInput,
+        ) -> Result<RankedChampionDataSnapshot, RankedChampionDataError> {
+            Ok(self.snapshot.clone())
+        }
+    }
+
     fn default_settings() -> AppSettings {
         AppSettings {
             startup_page: StartupPage::Dashboard,
@@ -2223,6 +2383,48 @@ mod tests {
             title: format!("Activity {id}"),
             body: None,
             created_at: "2026-04-18 00:00:00".to_string(),
+        }
+    }
+
+    fn sample_ranked_snapshot(source: &str) -> RankedChampionDataSnapshot {
+        RankedChampionDataSnapshot {
+            source: source.to_string(),
+            patch: Some("26.08".to_string()),
+            region: Some("KR".to_string()),
+            queue: Some("RANKED_SOLO_5X5".to_string()),
+            tier: Some("EMERALD_PLUS".to_string()),
+            generated_at: Some("2026-04-25T00:00:00Z".to_string()),
+            imported_at: "2026-04-25 00:00:00".to_string(),
+            records: vec![
+                RankedChampionStat {
+                    champion_id: 103,
+                    champion_name: "Ahri".to_string(),
+                    champion_alias: Some("Ahri".to_string()),
+                    lane: RankedChampionLane::Middle,
+                    win_rate: 51.4,
+                    pick_rate: 10.0,
+                    ban_rate: 8.0,
+                    overall_score: 90.0,
+                    games: 1000,
+                    wins: 514,
+                    picks: 1000,
+                    bans: 80,
+                },
+                RankedChampionStat {
+                    champion_id: 222,
+                    champion_name: "Jinx".to_string(),
+                    champion_alias: Some("Jinx".to_string()),
+                    lane: RankedChampionLane::Bottom,
+                    win_rate: 52.1,
+                    pick_rate: 12.0,
+                    ban_rate: 6.0,
+                    overall_score: 88.0,
+                    games: 1200,
+                    wins: 625,
+                    picks: 1200,
+                    bans: 72,
+                },
+            ],
         }
     }
 
