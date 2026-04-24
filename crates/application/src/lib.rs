@@ -12,9 +12,10 @@ use domain::{
     LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
     MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
     ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
-    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals, RankedChampionLane,
-    RankedChampionSort, RankedChampionStat, RankedChampionStatsResponse, RecentChampionSummary,
-    RecentMatchSummary, RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
+    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
+    RankedChampionDataSnapshot, RankedChampionLane, RankedChampionSort, RankedChampionStat,
+    RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
+    RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
 const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
@@ -298,6 +299,13 @@ pub trait AppStore {
     fn get_player_note(&self, player_puuid: &str) -> Result<Option<StoredPlayerNote>, String>;
     fn save_player_note(&self, note: StoredPlayerNoteInput) -> Result<StoredPlayerNote, String>;
     fn clear_player_note(&self, player_puuid: &str) -> Result<bool, String>;
+    fn latest_ranked_champion_snapshot(
+        &self,
+    ) -> Result<Option<RankedChampionDataSnapshot>, String>;
+    fn replace_ranked_champion_snapshot(
+        &self,
+        snapshot: RankedChampionDataSnapshot,
+    ) -> Result<RankedChampionDataSnapshot, String>;
 }
 
 pub trait LeagueClientReader {
@@ -712,6 +720,11 @@ pub fn get_ranked_champion_stats(input: RankedChampionStatsInput) -> RankedChamp
         records,
         source: "Local ranked data sample".to_string(),
         updated_at: "2026-04-24".to_string(),
+        patch: None,
+        region: None,
+        queue: Some("RANKED_SOLO_5x5".to_string()),
+        tier: Some("sample".to_string()),
+        is_cached: false,
     }
 }
 
@@ -1404,12 +1417,16 @@ fn ranked_champion_stat(seed: &RankedChampionSeed) -> RankedChampionStat {
     RankedChampionStat {
         champion_id: seed.champion_id,
         champion_name: seed.champion_name.to_string(),
+        champion_alias: None,
         lane: seed.lane,
         win_rate: seed.win_rate,
         pick_rate: seed.pick_rate,
         ban_rate: seed.ban_rate,
         overall_score: ranked_overall_score(seed.win_rate, seed.pick_rate, seed.ban_rate),
         games: seed.games,
+        wins: ((seed.games as f64) * (seed.win_rate / 100.0)).round() as i64,
+        picks: seed.games,
+        bans: ((seed.games as f64) * (seed.ban_rate / 100.0)).round() as i64,
     }
 }
 
@@ -2033,6 +2050,7 @@ mod tests {
         created_entries: RefCell<Vec<NewActivityEntry>>,
         imported_entries: RefCell<Vec<LocalActivityEntry>>,
         player_notes: RefCell<Vec<StoredPlayerNote>>,
+        ranked_snapshot: RefCell<Option<RankedChampionDataSnapshot>>,
         last_activity_query: RefCell<Option<(i64, Option<ActivityKind>)>>,
         import_count: RefCell<usize>,
         clear_count: RefCell<usize>,
@@ -2046,6 +2064,7 @@ mod tests {
                 created_entries: RefCell::new(Vec::new()),
                 imported_entries: RefCell::new(Vec::new()),
                 player_notes: RefCell::new(Vec::new()),
+                ranked_snapshot: RefCell::new(None),
                 last_activity_query: RefCell::new(None),
                 import_count: RefCell::new(0),
                 clear_count: RefCell::new(0),
@@ -2171,6 +2190,20 @@ mod tests {
             notes.retain(|note| note.player_puuid != player_puuid);
 
             Ok(before != notes.len())
+        }
+
+        fn latest_ranked_champion_snapshot(
+            &self,
+        ) -> Result<Option<RankedChampionDataSnapshot>, String> {
+            Ok(self.ranked_snapshot.borrow().clone())
+        }
+
+        fn replace_ranked_champion_snapshot(
+            &self,
+            snapshot: RankedChampionDataSnapshot,
+        ) -> Result<RankedChampionDataSnapshot, String> {
+            self.ranked_snapshot.replace(Some(snapshot.clone()));
+            Ok(snapshot)
         }
     }
 

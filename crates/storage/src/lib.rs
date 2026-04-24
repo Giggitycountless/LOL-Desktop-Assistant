@@ -6,7 +6,8 @@ use std::{
 
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, ImportLocalDataResult, LocalActivityEntry,
-    NewActivityEntry, SettingsValues, StartupPage,
+    NewActivityEntry, RankedChampionDataSnapshot, RankedChampionLane, RankedChampionStat,
+    SettingsValues, StartupPage,
 };
 use rusqlite::{Connection, OptionalExtension};
 
@@ -14,6 +15,7 @@ const DATABASE_FILE_NAME: &str = "app.sqlite";
 const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_state_foundation.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_player_notes.sql");
+const MIGRATION_0004: &str = include_str!("../migrations/0004_ranked_champion_cache.sql");
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -154,6 +156,31 @@ impl SqliteStore {
 
         Ok(deleted_count > 0)
     }
+
+    pub fn latest_ranked_champion_snapshot(
+        &self,
+    ) -> StorageResult<Option<RankedChampionDataSnapshot>> {
+        let connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        read_latest_ranked_champion_snapshot(&connection)
+    }
+
+    pub fn replace_ranked_champion_snapshot(
+        &self,
+        snapshot: &RankedChampionDataSnapshot,
+    ) -> StorageResult<RankedChampionDataSnapshot> {
+        let mut connection = Connection::open(&self.database_path)?;
+        configure_connection(&connection)?;
+        let transaction = connection.transaction()?;
+
+        transaction.execute("DELETE FROM ranked_champion_snapshots", [])?;
+        insert_ranked_champion_snapshot(&transaction, snapshot)?;
+        let saved = read_latest_ranked_champion_snapshot(&transaction)?
+            .ok_or(StorageError::MissingRankedChampionSnapshot)?;
+        transaction.commit()?;
+
+        Ok(saved)
+    }
 }
 
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -167,6 +194,8 @@ pub enum StorageError {
     MissingSchemaVersion,
     MissingPlayerNote,
     InvalidPlayerTags(String),
+    InvalidRankedChampionLane(String),
+    MissingRankedChampionSnapshot,
 }
 
 impl fmt::Display for StorageError {
@@ -179,6 +208,12 @@ impl fmt::Display for StorageError {
             Self::MissingSchemaVersion => write!(formatter, "schema version metadata is missing"),
             Self::MissingPlayerNote => write!(formatter, "player note is missing after save"),
             Self::InvalidPlayerTags(error) => write!(formatter, "invalid player tags: {error}"),
+            Self::InvalidRankedChampionLane(value) => {
+                write!(formatter, "invalid ranked champion lane: {value}")
+            }
+            Self::MissingRankedChampionSnapshot => {
+                write!(formatter, "ranked champion snapshot is missing after save")
+            }
         }
     }
 }
@@ -192,7 +227,9 @@ impl Error for StorageError {
             | Self::InvalidStartupPage(_)
             | Self::MissingSchemaVersion
             | Self::MissingPlayerNote
-            | Self::InvalidPlayerTags(_) => None,
+            | Self::InvalidPlayerTags(_)
+            | Self::InvalidRankedChampionLane(_)
+            | Self::MissingRankedChampionSnapshot => None,
         }
     }
 }
@@ -240,6 +277,11 @@ fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
             version: 3,
             description: "player_notes",
             sql: MIGRATION_0003,
+        },
+        Migration {
+            version: 4,
+            description: "ranked_champion_cache",
+            sql: MIGRATION_0004,
         },
     ] {
         let migration_is_applied = transaction
@@ -523,6 +565,140 @@ fn write_player_note(
     Ok(())
 }
 
+fn read_latest_ranked_champion_snapshot(
+    connection: &Connection,
+) -> StorageResult<Option<RankedChampionDataSnapshot>> {
+    let metadata = connection
+        .query_row(
+            "SELECT id, source, patch, region, queue, tier, generated_at, imported_at
+            FROM ranked_champion_snapshots
+            ORDER BY imported_at DESC, id DESC
+            LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((snapshot_id, source, patch, region, queue, tier, generated_at, imported_at)) = metadata
+    else {
+        return Ok(None);
+    };
+
+    let records = read_ranked_champion_entries(connection, snapshot_id)?;
+
+    Ok(Some(RankedChampionDataSnapshot {
+        source,
+        patch,
+        region,
+        queue,
+        tier,
+        generated_at,
+        imported_at,
+        records,
+    }))
+}
+
+fn read_ranked_champion_entries(
+    connection: &Connection,
+    snapshot_id: i64,
+) -> StorageResult<Vec<RankedChampionStat>> {
+    let mut statement = connection.prepare(
+        "SELECT champion_id, champion_name, champion_alias, lane, games, wins, picks, bans,
+            win_rate, pick_rate, ban_rate, overall_score
+        FROM ranked_champion_entries
+        WHERE snapshot_id = ?1
+        ORDER BY overall_score DESC, champion_name ASC",
+    )?;
+    let records = statement
+        .query_map([snapshot_id], read_ranked_champion_entry)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(records)
+}
+
+fn read_ranked_champion_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<RankedChampionStat> {
+    let lane: String = row.get(3)?;
+
+    Ok(RankedChampionStat {
+        champion_id: row.get(0)?,
+        champion_name: row.get(1)?,
+        champion_alias: row.get(2)?,
+        lane: RankedChampionLane::parse(lane.as_str()).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                Box::new(StorageError::InvalidRankedChampionLane(lane)),
+            )
+        })?,
+        games: row.get(4)?,
+        wins: row.get(5)?,
+        picks: row.get(6)?,
+        bans: row.get(7)?,
+        win_rate: row.get(8)?,
+        pick_rate: row.get(9)?,
+        ban_rate: row.get(10)?,
+        overall_score: row.get(11)?,
+    })
+}
+
+fn insert_ranked_champion_snapshot(
+    connection: &Connection,
+    snapshot: &RankedChampionDataSnapshot,
+) -> StorageResult<()> {
+    connection.execute(
+        "INSERT INTO ranked_champion_snapshots
+            (source, patch, region, queue, tier, generated_at, imported_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            snapshot.source.as_str(),
+            snapshot.patch.as_deref(),
+            snapshot.region.as_deref(),
+            snapshot.queue.as_deref(),
+            snapshot.tier.as_deref(),
+            snapshot.generated_at.as_deref(),
+            snapshot.imported_at.as_str(),
+        ),
+    )?;
+    let snapshot_id = connection.last_insert_rowid();
+
+    for record in &snapshot.records {
+        connection.execute(
+            "INSERT INTO ranked_champion_entries
+                (snapshot_id, champion_id, champion_name, champion_alias, lane, games, wins, picks,
+                    bans, win_rate, pick_rate, ban_rate, overall_score)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            (
+                snapshot_id,
+                record.champion_id,
+                record.champion_name.as_str(),
+                record.champion_alias.as_deref(),
+                record.lane.as_str(),
+                record.games,
+                record.wins,
+                record.picks,
+                record.bans,
+                record.win_rate,
+                record.pick_rate,
+                record.ban_rate,
+                record.overall_score,
+            ),
+        )?;
+    }
+
+    Ok(())
+}
+
 fn bool_to_int(value: bool) -> i64 {
     if value {
         1
@@ -596,6 +772,20 @@ impl application::AppStore for SqliteStore {
     fn clear_player_note(&self, player_puuid: &str) -> Result<bool, String> {
         SqliteStore::clear_player_note(self, player_puuid).map_err(|error| error.to_string())
     }
+
+    fn latest_ranked_champion_snapshot(
+        &self,
+    ) -> Result<Option<RankedChampionDataSnapshot>, String> {
+        SqliteStore::latest_ranked_champion_snapshot(self).map_err(|error| error.to_string())
+    }
+
+    fn replace_ranked_champion_snapshot(
+        &self,
+        snapshot: RankedChampionDataSnapshot,
+    ) -> Result<RankedChampionDataSnapshot, String> {
+        SqliteStore::replace_ranked_champion_snapshot(self, &snapshot)
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -613,9 +803,9 @@ mod tests {
         let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
 
         assert!(store.database_path().exists());
-        assert_eq!(store.health().expect("storage health").schema_version, 3);
+        assert_eq!(store.health().expect("storage health").schema_version, 4);
         assert_eq!(store.get_settings().expect("settings").activity_limit, 100);
-        assert_eq!(migration_count(store.database_path()), 3);
+        assert_eq!(migration_count(store.database_path()), 4);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -628,8 +818,8 @@ mod tests {
         let second = SqliteStore::initialize(&data_dir).expect("second initialization");
 
         assert_eq!(first.database_path(), second.database_path());
-        assert_eq!(second.health().expect("storage health").schema_version, 3);
-        assert_eq!(migration_count(second.database_path()), 3);
+        assert_eq!(second.health().expect("storage health").schema_version, 4);
+        assert_eq!(migration_count(second.database_path()), 4);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -663,12 +853,12 @@ mod tests {
 
         let store = SqliteStore::initialize(&data_dir).expect("upgrade database");
 
-        assert_eq!(store.health().expect("storage health").schema_version, 3);
+        assert_eq!(store.health().expect("storage health").schema_version, 4);
         assert_eq!(
             store.get_settings().expect("settings").startup_page,
             StartupPage::Dashboard
         );
-        assert_eq!(migration_count(store.database_path()), 3);
+        assert_eq!(migration_count(store.database_path()), 4);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -848,6 +1038,35 @@ mod tests {
         let _ = fs::remove_dir_all(data_dir);
     }
 
+    #[test]
+    fn stores_and_replaces_ranked_champion_snapshot() {
+        let data_dir = unique_temp_dir();
+        let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
+
+        assert!(store
+            .latest_ranked_champion_snapshot()
+            .expect("empty ranked snapshot reads")
+            .is_none());
+
+        let first = sample_ranked_snapshot("first", 103, RankedChampionLane::Middle);
+        let saved = store
+            .replace_ranked_champion_snapshot(&first)
+            .expect("ranked snapshot saves");
+        let second = sample_ranked_snapshot("second", 222, RankedChampionLane::Bottom);
+        let replaced = store
+            .replace_ranked_champion_snapshot(&second)
+            .expect("ranked snapshot replaces");
+
+        assert_eq!(saved.source, "first");
+        assert_eq!(saved.records[0].champion_name, "Ahri");
+        assert_eq!(replaced.source, "second");
+        assert_eq!(replaced.records.len(), 1);
+        assert_eq!(replaced.records[0].champion_id, 222);
+        assert_eq!(ranked_snapshot_count(store.database_path()), 1);
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
     fn unique_temp_dir() -> PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -869,5 +1088,45 @@ mod tests {
                 row.get(0)
             })
             .expect("query migration count")
+    }
+
+    fn ranked_snapshot_count(database_path: &Path) -> i64 {
+        let connection = Connection::open(database_path).expect("open test database");
+
+        connection
+            .query_row("SELECT COUNT(*) FROM ranked_champion_snapshots", [], |row| {
+                row.get(0)
+            })
+            .expect("query ranked snapshot count")
+    }
+
+    fn sample_ranked_snapshot(
+        source: &str,
+        champion_id: i64,
+        lane: RankedChampionLane,
+    ) -> RankedChampionDataSnapshot {
+        RankedChampionDataSnapshot {
+            source: source.to_string(),
+            patch: Some("26.08".to_string()),
+            region: Some("KR".to_string()),
+            queue: Some("RANKED_SOLO_5x5".to_string()),
+            tier: Some("EMERALD_PLUS".to_string()),
+            generated_at: Some("2026-04-25T00:00:00Z".to_string()),
+            imported_at: "2026-04-25 01:00:00".to_string(),
+            records: vec![RankedChampionStat {
+                champion_id,
+                champion_name: if champion_id == 103 { "Ahri" } else { "Jinx" }.to_string(),
+                champion_alias: None,
+                lane,
+                win_rate: 51.2,
+                pick_rate: 10.4,
+                ban_rate: 8.0,
+                overall_score: 90.0,
+                games: 1000,
+                wins: 512,
+                picks: 1000,
+                bans: 80,
+            }],
+        }
     }
 }

@@ -326,6 +326,11 @@ pub struct RankedChampionStatsResponse {
     pub records: Vec<RankedChampionStat>,
     pub source: String,
     pub updated_at: String,
+    pub patch: Option<String>,
+    pub region: Option<String>,
+    pub queue: Option<String>,
+    pub tier: Option<String>,
+    pub is_cached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -333,12 +338,29 @@ pub struct RankedChampionStatsResponse {
 pub struct RankedChampionStat {
     pub champion_id: i64,
     pub champion_name: String,
+    pub champion_alias: Option<String>,
     pub lane: RankedChampionLane,
     pub win_rate: f64,
     pub pick_rate: f64,
     pub ban_rate: f64,
     pub overall_score: f64,
     pub games: i64,
+    pub wins: i64,
+    pub picks: i64,
+    pub bans: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RankedChampionDataSnapshot {
+    pub source: String,
+    pub patch: Option<String>,
+    pub region: Option<String>,
+    pub queue: Option<String>,
+    pub tier: Option<String>,
+    pub generated_at: Option<String>,
+    pub imported_at: String,
+    pub records: Vec<RankedChampionStat>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -367,6 +389,27 @@ impl RankedChampionLane {
             Self::Middle => "Middle",
             Self::Bottom => "Bottom",
             Self::Support => "Support",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Jungle => "jungle",
+            Self::Middle => "middle",
+            Self::Bottom => "bottom",
+            Self::Support => "support",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "top" => Some(Self::Top),
+            "jungle" => Some(Self::Jungle),
+            "middle" => Some(Self::Middle),
+            "bottom" => Some(Self::Bottom),
+            "support" => Some(Self::Support),
+            _ => None,
         }
     }
 }
