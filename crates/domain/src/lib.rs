@@ -326,11 +326,15 @@ pub struct RankedChampionStatsResponse {
     pub records: Vec<RankedChampionStat>,
     pub source: String,
     pub updated_at: String,
+    pub generated_at: Option<String>,
+    pub imported_at: Option<String>,
     pub patch: Option<String>,
     pub region: Option<String>,
     pub queue: Option<String>,
     pub tier: Option<String>,
     pub is_cached: bool,
+    pub data_status: RankedChampionDataStatus,
+    pub status_message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -361,6 +365,15 @@ pub struct RankedChampionDataSnapshot {
     pub generated_at: Option<String>,
     pub imported_at: String,
     pub records: Vec<RankedChampionStat>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RankedChampionDataStatus {
+    Sample,
+    Cached,
+    Fresh,
+    StaleCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

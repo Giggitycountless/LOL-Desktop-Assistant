@@ -17,6 +17,7 @@ export type LeagueDataSection = "champions" | "ranked" | "matches" | "participan
 export type RankedQueue = "soloDuo" | "flex" | "other";
 export type RankedChampionLane = "top" | "jungle" | "middle" | "bottom" | "support";
 export type RankedChampionSort = "overall" | "winRate" | "banRate" | "pickRate";
+export type RankedChampionDataStatus = "sample" | "cached" | "fresh" | "staleCache";
 export type MatchResult = "win" | "loss" | "unknown";
 export type KdaTag = "high" | "standard" | "unavailable";
 
@@ -123,11 +124,15 @@ export type RankedChampionStatsResponse = {
   records: RankedChampionStat[];
   source: string;
   updatedAt: string;
+  generatedAt: string | null;
+  importedAt: string | null;
   patch: string | null;
   region: string | null;
   queue: string | null;
   tier: string | null;
   isCached: boolean;
+  dataStatus: RankedChampionDataStatus;
+  statusMessage: string | null;
 };
 
 export type RankedChampionRefreshInput = RankedChampionStatsInput & {

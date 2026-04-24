@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt, fs,
+    path::PathBuf,
+    time::Duration,
+};
 
 use application::{
     LeagueClientReadError, LeagueClientReader, RankedChampionDataError, RankedChampionDataProvider,
@@ -121,8 +126,18 @@ pub fn parse_ranked_champion_snapshot_json(
     }
 
     let mut records = Vec::with_capacity(document.champions.len());
+    let mut seen_records = HashSet::new();
     for champion in document.champions {
-        records.push(normalize_ranked_champion_entry(champion)?);
+        let record = normalize_ranked_champion_entry(champion)?;
+        let record_key = format!("{}:{}", record.champion_id, record.lane.as_str());
+
+        if !seen_records.insert(record_key) {
+            return Err(RankedChampionDataError::InvalidData(
+                "Ranked champion data contains duplicate champion/lane entries".to_string(),
+            ));
+        }
+
+        records.push(record);
     }
 
     Ok(RankedChampionDataSnapshot {
@@ -214,6 +229,13 @@ fn normalize_ranked_champion_entry(
     let overall_score = entry
         .overall_score
         .unwrap_or_else(|| ranked_overall_score(entry.win_rate, entry.pick_rate, entry.ban_rate));
+    validate_rate(overall_score, "overallScore")?;
+
+    if wins > entry.games {
+        return Err(RankedChampionDataError::InvalidData(
+            "Ranked champion wins must not exceed games".to_string(),
+        ));
+    }
 
     Ok(RankedChampionStat {
         champion_id: entry.champion_id,
@@ -1854,6 +1876,53 @@ mod tests {
 
         assert!(matches!(error, RankedChampionDataError::InvalidData(_)));
         assert!(!error.to_string().contains("Authorization"));
+    }
+
+    #[test]
+    fn rejects_duplicate_ranked_champion_lane_entries() {
+        let error = parse_ranked_champion_snapshot_json(
+            r#"{
+                "formatVersion": 1,
+                "champions": [
+                    {
+                        "championId": 103,
+                        "championName": "Ahri",
+                        "lane": "middle",
+                        "games": 1000,
+                        "winRate": 51.4,
+                        "pickRate": 10.2,
+                        "banRate": 8.0
+                    },
+                    {
+                        "championId": 103,
+                        "championName": "Ahri",
+                        "lane": "mid",
+                        "games": 900,
+                        "winRate": 50.0,
+                        "pickRate": 9.0,
+                        "banRate": 7.0
+                    }
+                ]
+            }"#,
+        )
+        .expect_err("duplicate ranked champion lane is rejected");
+
+        assert!(error.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn checked_in_ranked_champion_data_matches_adapter_contract() {
+        let snapshot = parse_ranked_champion_snapshot_json(include_str!(
+            "../../../data/ranked-champions/latest.json"
+        ))
+        .expect("checked-in ranked champion data parses");
+
+        assert_eq!(snapshot.source, "lol-desktop-assistant-sample");
+        assert_eq!(snapshot.records.len(), 10);
+        assert!(snapshot
+            .records
+            .iter()
+            .any(|record| record.lane == RankedChampionLane::Support));
     }
 
     #[test]

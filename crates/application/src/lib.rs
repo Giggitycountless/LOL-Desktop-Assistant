@@ -13,8 +13,8 @@ use domain::{
     MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
     ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
     PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
-    RankedChampionDataSnapshot, RankedChampionLane, RankedChampionSort, RankedChampionStat,
-    RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
+    RankedChampionDataSnapshot, RankedChampionDataStatus, RankedChampionLane, RankedChampionSort,
+    RankedChampionStat, RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
     RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
@@ -748,11 +748,17 @@ pub fn get_ranked_champion_stats(input: RankedChampionStatsInput) -> RankedChamp
         records,
         source: "Local ranked data sample".to_string(),
         updated_at: "2026-04-24".to_string(),
+        generated_at: None,
+        imported_at: None,
         patch: None,
         region: None,
         queue: Some("RANKED_SOLO_5x5".to_string()),
         tier: Some("sample".to_string()),
         is_cached: false,
+        data_status: RankedChampionDataStatus::Sample,
+        status_message: Some(
+            "Sample data is shown until ranked champion data is refreshed".to_string(),
+        ),
     }
 }
 
@@ -764,7 +770,13 @@ pub fn get_ranked_champion_stats_from_store(
         .latest_ranked_champion_snapshot()
         .map_err(ApplicationError::Storage)?
     {
-        Some(snapshot) => Ok(ranked_response_from_snapshot(snapshot, input, true)),
+        Some(snapshot) => Ok(ranked_response_from_snapshot(
+            snapshot,
+            input,
+            true,
+            RankedChampionDataStatus::Cached,
+            None,
+        )),
         None => Ok(get_ranked_champion_stats(input)),
     }
 }
@@ -775,16 +787,43 @@ pub fn refresh_ranked_champion_stats(
     input: RankedChampionRefreshInput,
     stats_input: RankedChampionStatsInput,
 ) -> Result<RankedChampionStatsResponse, ApplicationError> {
-    let mut snapshot = provider
-        .fetch_ranked_champion_snapshot(input)
-        .map_err(ranked_provider_error)?;
+    let mut snapshot = match provider.fetch_ranked_champion_snapshot(input) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let cached_snapshot = store
+                .latest_ranked_champion_snapshot()
+                .map_err(ApplicationError::Storage)?;
+
+            return cached_snapshot.map_or_else(
+                || Err(ranked_provider_error(error)),
+                |snapshot| {
+                    Ok(ranked_response_from_snapshot(
+                        snapshot,
+                        stats_input,
+                        true,
+                        RankedChampionDataStatus::StaleCache,
+                        Some(
+                            "Remote ranked champion data could not be refreshed; showing cached data"
+                                .to_string(),
+                        ),
+                    ))
+                },
+            );
+        }
+    };
     snapshot.imported_at = unix_timestamp_seconds();
 
     let saved = store
         .replace_ranked_champion_snapshot(snapshot)
         .map_err(ApplicationError::Storage)?;
 
-    Ok(ranked_response_from_snapshot(saved, stats_input, true))
+    Ok(ranked_response_from_snapshot(
+        saved,
+        stats_input,
+        true,
+        RankedChampionDataStatus::Fresh,
+        Some("Ranked champion data refreshed".to_string()),
+    ))
 }
 
 pub fn get_league_profile_icon(
@@ -1493,6 +1532,8 @@ fn ranked_response_from_snapshot(
     snapshot: RankedChampionDataSnapshot,
     input: RankedChampionStatsInput,
     is_cached: bool,
+    data_status: RankedChampionDataStatus,
+    status_message: Option<String>,
 ) -> RankedChampionStatsResponse {
     let sort_by = input.sort_by.unwrap_or(RankedChampionSort::Overall);
     let mut records: Vec<RankedChampionStat> = snapshot
@@ -1512,11 +1553,15 @@ fn ranked_response_from_snapshot(
             .generated_at
             .clone()
             .unwrap_or_else(|| snapshot.imported_at.clone()),
+        generated_at: snapshot.generated_at,
+        imported_at: Some(snapshot.imported_at),
         patch: snapshot.patch,
         region: snapshot.region,
         queue: snapshot.queue,
         tier: snapshot.tier,
         is_cached,
+        data_status,
+        status_message,
     }
 }
 
@@ -1857,6 +1902,7 @@ mod tests {
         assert_eq!(response.source, "cached-json");
         assert_eq!(response.patch.as_deref(), Some("26.08"));
         assert!(response.is_cached);
+        assert_eq!(response.data_status, RankedChampionDataStatus::Cached);
         assert_eq!(response.records.len(), 1);
         assert_eq!(response.records[0].champion_name, "Ahri");
     }
@@ -1881,11 +1927,56 @@ mod tests {
 
         assert_eq!(response.source, "remote-json");
         assert!(response.is_cached);
+        assert_eq!(response.data_status, RankedChampionDataStatus::Fresh);
         assert!(store.ranked_snapshot.borrow().is_some());
         assert_eq!(
             store.ranked_snapshot.borrow().as_ref().unwrap().source,
             "remote-json"
         );
+    }
+
+    #[test]
+    fn ranked_champion_refresh_returns_stale_cache_when_remote_fails() {
+        let store = FakeStore::new(default_settings());
+        store
+            .ranked_snapshot
+            .replace(Some(sample_ranked_snapshot("cached-json")));
+        let provider = FailingRankedChampionProvider;
+
+        let response = refresh_ranked_champion_stats(
+            &store,
+            &provider,
+            RankedChampionRefreshInput { url: None },
+            RankedChampionStatsInput {
+                lane: Some(RankedChampionLane::Middle),
+                sort_by: Some(RankedChampionSort::Overall),
+            },
+        )
+        .expect("stale cache is returned");
+
+        assert_eq!(response.source, "cached-json");
+        assert_eq!(response.data_status, RankedChampionDataStatus::StaleCache);
+        assert_eq!(response.records.len(), 1);
+        assert!(response.status_message.unwrap().contains("cached data"));
+    }
+
+    #[test]
+    fn ranked_champion_refresh_errors_without_cache_when_remote_fails() {
+        let store = FakeStore::new(default_settings());
+        let provider = FailingRankedChampionProvider;
+
+        let error = refresh_ranked_champion_stats(
+            &store,
+            &provider,
+            RankedChampionRefreshInput { url: None },
+            RankedChampionStatsInput {
+                lane: None,
+                sort_by: None,
+            },
+        )
+        .expect_err("refresh fails without cache");
+
+        assert_eq!(error.code(), "integration");
     }
 
     #[test]
@@ -2364,6 +2455,19 @@ mod tests {
             _input: RankedChampionRefreshInput,
         ) -> Result<RankedChampionDataSnapshot, RankedChampionDataError> {
             Ok(self.snapshot.clone())
+        }
+    }
+
+    struct FailingRankedChampionProvider;
+
+    impl RankedChampionDataProvider for FailingRankedChampionProvider {
+        fn fetch_ranked_champion_snapshot(
+            &self,
+            _input: RankedChampionRefreshInput,
+        ) -> Result<RankedChampionDataSnapshot, RankedChampionDataError> {
+            Err(RankedChampionDataError::Unavailable(
+                "remote unavailable".to_string(),
+            ))
         }
     }
 
