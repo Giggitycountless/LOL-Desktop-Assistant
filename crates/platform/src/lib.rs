@@ -624,6 +624,13 @@ mod tests {
         assert_eq!(value["records"][0]["lane"], "bottom");
         assert!(value["records"][0]["pickRate"].as_f64().unwrap() >= 0.0);
         assert_eq!(value["isCached"], false);
+        assert_eq!(value["dataStatus"], "sample");
+        assert_eq!(
+            value["statusMessage"],
+            "Sample data is shown until ranked champion data is refreshed"
+        );
+        assert!(value["generatedAt"].is_null());
+        assert!(value["importedAt"].is_null());
         assert!(value["records"][0].get("puuid").is_none());
         assert!(value["records"][0].get("authorization").is_none());
         assert!(value["records"][0].get("password").is_none());
