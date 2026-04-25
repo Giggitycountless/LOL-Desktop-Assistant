@@ -13,6 +13,9 @@ import type {
   PostMatchDetail,
   RecentMatchSummary,
 } from "../backend/types";
+import type { TranslationKey } from "../i18n";
+
+type T = (key: TranslationKey) => string;
 
 type SelectedParticipant = {
   gameId: number;
@@ -29,6 +32,7 @@ export function Matches() {
     loadLeagueChampionIcon,
     loadPostMatchDetail,
     refreshLeagueClient,
+    t,
   } = useAppState();
   const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
   const matches = leagueSelfSnapshot?.recentMatches ?? [];
@@ -92,8 +96,8 @@ export function Matches() {
         <div className="flex min-w-0 flex-col gap-7">
           <header className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Matches</p>
-              <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Post-Match Analysis</h1>
+              <p className="text-sm font-medium uppercase tracking-wide text-rose-700">{t("matches.eyebrow")}</p>
+              <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("matches.title")}</h1>
             </div>
             <button
               className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -102,23 +106,23 @@ export function Matches() {
               type="button"
             >
               <RefreshIcon />
-              {isLeagueClientLoading ? "Refreshing" : "Refresh"}
+              {isLeagueClientLoading ? t("common.refreshing") : t("common.refresh")}
             </button>
           </header>
 
           <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">Completed Matches</h2>
-                <p className="mt-1 text-sm text-zinc-500">{matchCountLabel(matches.length, isLeagueClientLoading)}</p>
+                <h2 className="text-base font-semibold text-zinc-950">{t("matches.completed")}</h2>
+                <p className="mt-1 text-sm text-zinc-500">{matchCountLabel(matches.length, isLeagueClientLoading, t)}</p>
               </div>
-              <StatusBadge result={matches[0]?.result ?? "unknown"} />
+              <StatusBadge result={matches[0]?.result ?? "unknown"} t={t} />
             </div>
 
             <div className="mt-5 grid gap-3">
-              {!leagueSelfSnapshot && isLeagueClientLoading && <StatePanel title="Loading matches" body="Reading local League Client data" />}
+              {!leagueSelfSnapshot && isLeagueClientLoading && <StatePanel title={t("matches.loading")} body={t("matches.readingClient")} />}
               {leagueSelfSnapshot && matches.length === 0 && (
-                <StatePanel title="No matches available" body={emptyMatchesBody(leagueSelfSnapshot.status.phase)} />
+                <StatePanel title={t("matches.none")} body={emptyMatchesBody(leagueSelfSnapshot.status.phase, t)} />
               )}
               {matches.map((match) => {
                 const detail = postMatchDetails[match.gameId];
@@ -134,6 +138,7 @@ export function Matches() {
                     onToggle={() => setExpandedGameId(expandedGameId === match.gameId ? null : match.gameId)}
                     gameAssets={leagueImages.gameAssets}
                     participantImages={leagueImages.championIcons}
+                    t={t}
                   />
                 );
               })}
@@ -154,6 +159,7 @@ function MatchCard({
   onToggle,
   gameAssets,
   participantImages,
+  t,
 }: {
   detail: PostMatchDetail | undefined;
   imageUrl: string | undefined;
@@ -163,6 +169,7 @@ function MatchCard({
   onToggle: () => void;
   gameAssets: Record<string, LeagueGameAssetView>;
   participantImages: Record<number, string>;
+  t: T;
 }) {
   return (
     <div className="rounded-md border border-zinc-200 bg-zinc-50">
@@ -176,10 +183,10 @@ function MatchCard({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <p className="truncate text-sm font-semibold text-zinc-950">{match.championName}</p>
-              <ResultBadge result={match.result} />
+              <ResultBadge result={match.result} t={t} />
             </div>
             <p className="mt-1 truncate text-xs text-zinc-500">
-              {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt)}
+              {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt, t)}
             </p>
           </div>
         </div>
@@ -197,12 +204,12 @@ function MatchCard({
       {isExpanded && (
         <div className="grid gap-4 border-t border-zinc-200 bg-white p-4">
           <div className="grid gap-3 sm:grid-cols-4">
-            <Detail label="Result" value={formatResult(match.result)} />
-            <Detail label="Duration" value={formatDuration(match.gameDurationSeconds)} />
-            <Detail label="Played" value={formatTimestamp(match.playedAt)} />
-            <Detail label="Match ID" value={String(match.gameId)} />
+            <Detail label={t("matches.result")} value={formatResult(match.result, t)} />
+            <Detail label={t("matches.duration")} value={formatDuration(match.gameDurationSeconds, t)} />
+            <Detail label={t("matches.played")} value={formatTimestamp(match.playedAt, t)} />
+            <Detail label={t("matches.matchId")} value={String(match.gameId)} />
           </div>
-          {!detail && <StatePanel title="Loading analysis" body="Reading completed match details from local history" />}
+          {!detail && <StatePanel title={t("matches.loadingAnalysis")} body={t("matches.readingAnalysis")} />}
           {detail && (
             <PostMatchAnalysis
               detail={detail}
@@ -257,7 +264,7 @@ function StatePanel({ title, body }: { title: string; body: string }) {
   );
 }
 
-function ResultBadge({ result }: { result: MatchResult }) {
+function ResultBadge({ result, t }: { result: MatchResult; t: T }) {
   const tone =
     result === "win"
       ? "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -265,11 +272,11 @@ function ResultBadge({ result }: { result: MatchResult }) {
         ? "border-rose-200 bg-rose-50 text-rose-800"
         : "border-zinc-200 bg-white text-zinc-600";
 
-  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result)}</span>;
+  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result, t)}</span>;
 }
 
-function StatusBadge({ result }: { result: MatchResult }) {
-  const label = result === "unknown" ? "Pending" : "Loaded";
+function StatusBadge({ result, t }: { result: MatchResult; t: T }) {
+  const label = result === "unknown" ? t("common.pending") : t("matches.loaded");
 
   return (
     <span className="inline-flex h-10 items-center rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm font-medium text-zinc-700">
@@ -306,40 +313,40 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
   );
 }
 
-function formatResult(result: MatchResult) {
+function formatResult(result: MatchResult, t: T) {
   switch (result) {
     case "win":
-      return "Win";
+      return t("common.win");
     case "loss":
-      return "Loss";
+      return t("common.loss");
     default:
-      return "Unknown";
+      return t("common.unknown");
   }
 }
 
-function matchCountLabel(count: number, isLoading: boolean) {
+function matchCountLabel(count: number, isLoading: boolean, t: T) {
   if (isLoading && count === 0) {
-    return "Loading local match data";
+    return t("matches.loading");
   }
 
-  return `${count} recent ${count === 1 ? "match" : "matches"}`;
+  return `${count} ${t("participant.recentMatches")}`;
 }
 
-function emptyMatchesBody(phase: string) {
+function emptyMatchesBody(phase: string, t: T) {
   if (phase === "notLoggedIn") {
-    return "Login to the League Client to read recent matches";
+    return t("matches.loginHint");
   }
 
   if (phase === "notRunning") {
-    return "Start the League Client to read recent matches";
+    return t("matches.startHint");
   }
 
-  return "Recent match data is unavailable";
+  return t("matches.unavailableHint");
 }
 
-function formatTimestamp(value: string | null | undefined) {
+function formatTimestamp(value: string | null | undefined, t: T) {
   if (!value) {
-    return "Pending";
+    return t("common.pending");
   }
 
   const numeric = Number(value);
@@ -354,9 +361,9 @@ function formatTimestamp(value: string | null | undefined) {
   return date.toLocaleString();
 }
 
-function formatDuration(value: number | null) {
+function formatDuration(value: number | null, t: T) {
   if (!value || value < 0) {
-    return "Unavailable";
+    return t("common.unavailable");
   }
 
   const minutes = Math.floor(value / 60);

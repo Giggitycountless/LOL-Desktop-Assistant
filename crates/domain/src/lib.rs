@@ -35,6 +35,7 @@ pub struct AppSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub startup_page: StartupPage,
+    pub language: AppLanguagePreference,
     pub compact_mode: bool,
     pub activity_limit: i64,
     pub auto_accept_enabled: bool,
@@ -49,6 +50,8 @@ pub struct AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsValues {
     pub startup_page: StartupPage,
+    #[serde(default)]
+    pub language: AppLanguagePreference,
     pub compact_mode: bool,
     pub activity_limit: i64,
     #[serde(default = "default_true")]
@@ -71,6 +74,7 @@ impl AppSettings {
     pub fn values(&self) -> SettingsValues {
         SettingsValues {
             startup_page: self.startup_page,
+            language: self.language,
             compact_mode: self.compact_mode,
             activity_limit: self.activity_limit,
             auto_accept_enabled: self.auto_accept_enabled,
@@ -78,6 +82,34 @@ impl AppSettings {
             auto_pick_champion_id: self.auto_pick_champion_id,
             auto_ban_enabled: self.auto_ban_enabled,
             auto_ban_champion_id: self.auto_ban_champion_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppLanguagePreference {
+    #[default]
+    System,
+    Zh,
+    En,
+}
+
+impl AppLanguagePreference {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Zh => "zh",
+            Self::En => "en",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "zh" => Some(Self::Zh),
+            "en" => Some(Self::En),
+            _ => None,
         }
     }
 }
@@ -301,6 +333,28 @@ pub struct LeagueGameAsset {
 pub struct LeagueChampionSummary {
     pub champion_id: i64,
     pub champion_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueChampionDetails {
+    pub champion_id: i64,
+    pub champion_name: String,
+    pub title: Option<String>,
+    pub square_portrait: Option<LeagueImageAsset>,
+    pub abilities: Vec<LeagueChampionAbility>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueChampionAbility {
+    pub slot: String,
+    pub name: String,
+    pub description: String,
+    pub icon: Option<LeagueImageAsset>,
+    pub cooldown: Option<String>,
+    pub cost: Option<String>,
+    pub range: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]

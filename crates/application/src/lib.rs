@@ -6,13 +6,14 @@ use std::{
 };
 
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
-    ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, KdaTag,
-    LeagueChampionSummary, LeagueClientStatus, LeagueDataSection, LeagueDataWarning,
-    LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot,
-    LocalActivityEntry, LocalDataExport, MatchResult, NewActivityEntry, ParticipantMetricLeader,
-    ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView,
-    PostMatchComparison, PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
+    ActivityEntry, ActivityKind, AppLanguagePreference, AppSettings, AppSnapshot,
+    ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus, HealthReport,
+    ImportLocalDataResult, KdaTag, LeagueChampionDetails, LeagueChampionSummary,
+    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind,
+    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
+    MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
+    ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
+    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
     RankedChampionDataSnapshot, RankedChampionDataStatus, RankedChampionLane, RankedChampionSort,
     RankedChampionStat, RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
     RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
@@ -328,6 +329,10 @@ pub trait LeagueClientReader {
     fn summoners_by_ids(&self, ids: &[i64]) -> Vec<SummonerBatchEntry>;
     fn summoners_by_names(&self, names: &[String]) -> Vec<SummonerBatchEntry>;
     fn champion_catalog(&self) -> Result<Vec<LeagueChampionSummary>, LeagueClientReadError>;
+    fn champion_details(
+        &self,
+        champion_id: i64,
+    ) -> Result<LeagueChampionDetails, LeagueClientReadError>;
     fn accept_ready_check(&self) -> Result<(), LeagueClientReadError>;
     fn apply_champ_select_preferences(
         &self,
@@ -380,6 +385,7 @@ pub struct SummonerBatchEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsInput {
     pub startup_page: String,
+    pub language: String,
     pub compact_mode: bool,
     pub activity_limit: i64,
     pub auto_accept_enabled: bool,
@@ -443,6 +449,11 @@ pub struct LeagueProfileIconInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeagueChampionIconInput {
+    pub champion_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeagueChampionDetailsInput {
     pub champion_id: i64,
 }
 
@@ -591,6 +602,7 @@ pub fn health_report(database_status: DatabaseStatus, schema_version: Option<i64
 pub fn settings_defaults() -> SettingsValues {
     SettingsValues {
         startup_page: StartupPage::Dashboard,
+        language: AppLanguagePreference::System,
         compact_mode: false,
         activity_limit: DEFAULT_ACTIVITY_LIMIT,
         auto_accept_enabled: true,
@@ -879,6 +891,17 @@ pub fn get_league_champion_icon(
 
     reader
         .champion_icon(champion_id)
+        .map_err(ApplicationError::from)
+}
+
+pub fn get_league_champion_details(
+    reader: &impl LeagueClientReader,
+    input: LeagueChampionDetailsInput,
+) -> Result<LeagueChampionDetails, ApplicationError> {
+    let champion_id = normalize_league_asset_id(input.champion_id, "Champion id")?;
+
+    reader
+        .champion_details(champion_id)
         .map_err(ApplicationError::from)
 }
 
@@ -1342,9 +1365,12 @@ fn validate_settings(input: SettingsInput) -> Result<SettingsValues, Application
     let startup_page = StartupPage::parse(input.startup_page.as_str()).ok_or_else(|| {
         ApplicationError::Validation("Startup page must be dashboard, activity, or settings".into())
     })?;
+    let language = AppLanguagePreference::parse(input.language.as_str())
+        .ok_or_else(|| ApplicationError::Validation("Language must be system, zh, or en".into()))?;
 
     let values = SettingsValues {
         startup_page,
+        language,
         compact_mode: input.compact_mode,
         activity_limit: input.activity_limit,
         auto_accept_enabled: input.auto_accept_enabled,
@@ -1949,6 +1975,7 @@ mod tests {
             &store,
             SettingsInput {
                 startup_page: "dashboard".to_string(),
+                language: "system".to_string(),
                 compact_mode: false,
                 activity_limit: 100,
                 auto_accept_enabled: true,
@@ -1972,6 +1999,7 @@ mod tests {
             &store,
             SettingsInput {
                 startup_page: "activity".to_string(),
+                language: "zh".to_string(),
                 compact_mode: true,
                 activity_limit: 50,
                 auto_accept_enabled: false,
@@ -1984,6 +2012,7 @@ mod tests {
         .expect("settings save succeeds");
 
         assert_eq!(result.startup_page, StartupPage::Activity);
+        assert_eq!(result.language, AppLanguagePreference::Zh);
         assert_eq!(result.activity_limit, 50);
         assert_eq!(store.created_entries.borrow().len(), 1);
         assert_eq!(
@@ -2587,6 +2616,7 @@ mod tests {
         fn save_settings(&self, settings: SettingsValues) -> Result<AppSettings, String> {
             let updated = AppSettings {
                 startup_page: settings.startup_page,
+                language: settings.language,
                 compact_mode: settings.compact_mode,
                 activity_limit: settings.activity_limit,
                 auto_accept_enabled: settings.auto_accept_enabled,
@@ -2744,6 +2774,7 @@ mod tests {
     fn default_settings() -> AppSettings {
         AppSettings {
             startup_page: StartupPage::Dashboard,
+            language: AppLanguagePreference::System,
             compact_mode: false,
             activity_limit: 100,
             auto_accept_enabled: true,
@@ -2964,6 +2995,33 @@ mod tests {
                 champion_id: 103,
                 champion_name: "Ahri".to_string(),
             }])
+        }
+
+        fn champion_details(
+            &self,
+            champion_id: i64,
+        ) -> Result<LeagueChampionDetails, LeagueClientReadError> {
+            Ok(LeagueChampionDetails {
+                champion_id,
+                champion_name: "Ahri".to_string(),
+                title: Some("the Nine-Tailed Fox".to_string()),
+                square_portrait: Some(LeagueImageAsset {
+                    mime_type: "image/png".to_string(),
+                    bytes: vec![champion_id as u8],
+                }),
+                abilities: vec![domain::LeagueChampionAbility {
+                    slot: "Q".to_string(),
+                    name: "Orb of Deception".to_string(),
+                    description: "Ahri sends out and pulls back her orb.".to_string(),
+                    icon: Some(LeagueImageAsset {
+                        mime_type: "image/png".to_string(),
+                        bytes: vec![1],
+                    }),
+                    cooldown: Some("7".to_string()),
+                    cost: Some("55".to_string()),
+                    range: Some("880".to_string()),
+                }],
+            })
         }
 
         fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {

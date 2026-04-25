@@ -1,24 +1,36 @@
-import { useEffect } from "react";
+import { MouseEvent, useEffect, useState } from "react";
 
 import type { ChampSelectPlayer, RankedQueueSummary, RecentMatchSummary } from "../backend/types";
+import type { EffectiveLanguage, TranslationKey } from "../i18n";
+import type { LeagueChampionAbilityView, LeagueChampionDetailsView } from "../state/AppStateProvider";
 import { useAppState } from "../state/AppStateProvider";
 
 const TEAM_SIZE = 5;
 const MATCH_ROWS = 10;
 
+type T = (key: TranslationKey) => string;
+
 export function SelfHistoryOverlay() {
   const {
     champSelectSnapshot,
+    championDetailsById,
+    effectiveLanguage,
     leagueImages,
     leagueSelfSnapshot,
+    loadLeagueChampionDetails,
     loadLeagueChampionIcon,
     loadLeagueProfileIcon,
     refreshLeagueClient,
+    t,
   } = useAppState();
+  const [selectedChampionId, setSelectedChampionId] = useState<number | null>(null);
+  const [isChampionDetailsLoading, setIsChampionDetailsLoading] = useState(false);
+  const [championDetailsError, setChampionDetailsError] = useState(false);
   const profileIconId = leagueSelfSnapshot?.summoner?.profileIconId ?? null;
   const players = champSelectSnapshot?.players ?? [];
   const allies = fillTeam(players.filter((player) => player.team === "ally"));
   const enemies = fillTeam(players.filter((player) => player.team === "enemy"));
+  const selectedChampionDetails = selectedChampionId ? championDetailsById[selectedChampionId] : undefined;
 
   useEffect(() => {
     void refreshLeagueClient({ matchLimit: 6 });
@@ -37,38 +49,99 @@ export function SelfHistoryOverlay() {
     }
   }, [loadLeagueChampionIcon, players]);
 
+  async function handleChampionSelect(event: MouseEvent, championId: number | null | undefined) {
+    event.stopPropagation();
+    if (!championId) {
+      return;
+    }
+
+    setSelectedChampionId(championId);
+    setChampionDetailsError(false);
+    if (championDetailsById[championId]) {
+      return;
+    }
+
+    setIsChampionDetailsLoading(true);
+    const didLoad = await loadLeagueChampionDetails(championId);
+    setIsChampionDetailsLoading(false);
+    setChampionDetailsError(!didLoad);
+  }
+
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[#eef1f5] p-2 text-slate-700">
+    <main
+      className="relative min-h-screen overflow-hidden bg-[#eef1f5] p-2 text-slate-700"
+      onClick={() => setSelectedChampionId(null)}
+    >
       <div className="grid h-[calc(100vh-4rem)] grid-cols-2 gap-2">
-        <TeamBoard imageUrls={leagueImages.championIcons} players={enemies} tone="enemy" />
-        <TeamBoard imageUrls={leagueImages.championIcons} players={allies} tone="ally" />
+        <TeamBoard
+          effectiveLanguage={effectiveLanguage}
+          imageUrls={leagueImages.championIcons}
+          onChampionSelect={handleChampionSelect}
+          players={enemies}
+          selectedChampionId={selectedChampionId}
+          t={t}
+          tone="enemy"
+        />
+        <TeamBoard
+          effectiveLanguage={effectiveLanguage}
+          imageUrls={leagueImages.championIcons}
+          onChampionSelect={handleChampionSelect}
+          players={allies}
+          selectedChampionId={selectedChampionId}
+          t={t}
+          tone="ally"
+        />
       </div>
       {players.length === 0 && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 rounded-md border border-slate-200 bg-white/95 px-5 py-3 text-center text-sm font-bold text-slate-500 shadow-sm">
-          未读取到英雄选择数据
+          {t("overlay.empty")}
         </div>
       )}
-      <SummaryBar allies={allies} enemies={enemies} />
+      {selectedChampionId && (
+        <ChampionDetailsPanel
+          details={selectedChampionDetails}
+          hasError={championDetailsError}
+          isLoading={isChampionDetailsLoading && !selectedChampionDetails}
+          onClose={(event) => {
+            event.stopPropagation();
+            setSelectedChampionId(null);
+          }}
+          t={t}
+        />
+      )}
+      <SummaryBar allies={allies} enemies={enemies} t={t} />
     </main>
   );
 }
 
 function TeamBoard({
+  effectiveLanguage,
   imageUrls,
+  onChampionSelect,
   players,
+  selectedChampionId,
+  t,
   tone,
 }: {
+  effectiveLanguage: EffectiveLanguage;
   imageUrls: Record<number, string>;
+  onChampionSelect: (event: MouseEvent, championId: number | null | undefined) => void;
   players: Array<ChampSelectPlayer | null>;
+  selectedChampionId: number | null;
+  t: T;
   tone: "ally" | "enemy";
 }) {
   return (
     <section className="grid h-full grid-cols-5 gap-2 rounded-md bg-white p-2 shadow-[0_0_0_1px_rgba(148,163,184,0.25),0_2px_8px_rgba(15,23,42,0.08)]">
       {players.map((player, index) => (
         <PlayerTrack
+          effectiveLanguage={effectiveLanguage}
           imageUrls={imageUrls}
           key={player ? `${tone}-${player.summonerId}` : `${tone}-empty-${index}`}
+          onChampionSelect={onChampionSelect}
           player={player}
+          selectedChampionId={selectedChampionId}
+          t={t}
           tone={tone}
         />
       ))}
@@ -77,12 +150,20 @@ function TeamBoard({
 }
 
 function PlayerTrack({
+  effectiveLanguage,
   imageUrls,
+  onChampionSelect,
   player,
+  selectedChampionId,
+  t,
   tone,
 }: {
+  effectiveLanguage: EffectiveLanguage;
   imageUrls: Record<number, string>;
+  onChampionSelect: (event: MouseEvent, championId: number | null | undefined) => void;
   player: ChampSelectPlayer | null;
+  selectedChampionId: number | null;
+  t: T;
   tone: "ally" | "enemy";
 }) {
   const selectedChampionUrl = player?.championId ? imageUrls[player.championId] : undefined;
@@ -95,17 +176,29 @@ function PlayerTrack({
   return (
     <article className="min-w-0">
       <div className="grid h-14 grid-cols-[3.5rem_minmax(0,1fr)] gap-1">
-        <ChampionPortrait displayName={player?.displayName ?? "未定级"} src={selectedChampionUrl} />
+        <ChampionPortrait
+          championId={player?.championId}
+          displayName={player?.displayName ?? t("overlay.unselected")}
+          isSelected={Boolean(player?.championId && player.championId === selectedChampionId)}
+          onSelect={onChampionSelect}
+          src={selectedChampionUrl}
+          t={t}
+        />
         <div className="grid gap-1">
-          <RankPill value={formatRank(soloRank)} />
-          <RankPill muted value={formatRank(flexRank)} />
+          <RankPill value={formatRank(soloRank, effectiveLanguage, t)} />
+          <RankPill muted value={formatRank(flexRank, effectiveLanguage, t)} />
         </div>
       </div>
 
       <div className="relative mt-2 h-9 rounded border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
-        <p className="truncate text-center text-xs font-black italic text-slate-700">Score: {score}</p>
+        <p className="truncate text-center text-xs font-black italic text-slate-700">{t("overlay.score")}: {score}</p>
         {badge && (
-          <span className={["absolute -right-px -top-2 flex h-5 min-w-7 items-center justify-center rounded-sm px-1 text-xs font-black text-white", tone === "ally" ? "bg-emerald-500" : "bg-blue-500"].join(" ")}>
+          <span
+            className={[
+              "absolute -right-px -top-2 flex h-5 min-w-7 items-center justify-center rounded-sm px-1 text-xs font-black text-white",
+              tone === "ally" ? "bg-emerald-500" : "bg-blue-500",
+            ].join(" ")}
+          >
             {badge}
           </span>
         )}
@@ -128,9 +221,112 @@ function MatchRow({ imageUrl, match }: { imageUrl: string | undefined; match: Re
   return (
     <div className="grid h-8 grid-cols-[2rem_minmax(0,1fr)] gap-1.5">
       <SmallChampionIcon championName={match?.championName ?? "?"} src={imageUrl} />
-      <div className={["flex h-8 min-w-0 items-center justify-center rounded px-1 text-sm font-black italic", match ? resultClass(match) : "bg-slate-50 text-slate-300"].join(" ")}>
+      <div
+        className={[
+          "flex h-8 min-w-0 items-center justify-center rounded px-1 text-sm font-black italic",
+          match ? resultClass(match) : "bg-slate-50 text-slate-300",
+        ].join(" ")}
+      >
         <span className="truncate">{match ? `${match.kills}-${match.deaths}-${match.assists}` : ""}</span>
       </div>
+    </div>
+  );
+}
+
+function ChampionDetailsPanel({
+  details,
+  hasError,
+  isLoading,
+  onClose,
+  t,
+}: {
+  details: LeagueChampionDetailsView | undefined;
+  hasError: boolean;
+  isLoading: boolean;
+  onClose: (event: MouseEvent<HTMLButtonElement>) => void;
+  t: T;
+}) {
+  return (
+    <aside
+      className="absolute right-2 top-2 z-20 flex max-h-[calc(100vh-1rem)] w-[22rem] flex-col overflow-hidden rounded-md border border-slate-200 bg-white shadow-2xl"
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-3">
+        {details?.squarePortraitUrl ? (
+          <img alt="" className="h-12 w-12 rounded border border-slate-300 object-cover" src={details.squarePortraitUrl} />
+        ) : (
+          <div className="flex h-12 w-12 items-center justify-center rounded border border-slate-300 bg-slate-200 text-sm font-black text-slate-500">
+            {details ? initials(details.championName) : "?"}
+          </div>
+        )}
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-base font-black text-slate-900">{details?.championName ?? t("overlay.abilities")}</h2>
+          <p className="truncate text-xs font-bold text-slate-500">{details?.title ?? t("overlay.readingAbilities")}</p>
+        </div>
+        <button
+          aria-label={t("overlay.close")}
+          className="flex h-8 w-8 items-center justify-center rounded border border-slate-300 bg-white text-lg font-black text-slate-500 hover:bg-slate-100"
+          onClick={onClose}
+          type="button"
+        >
+          x
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {isLoading && <p className="rounded bg-slate-100 px-3 py-2 text-sm font-bold text-slate-500">{t("overlay.loadingAbilities")}</p>}
+        {hasError && !details && (
+          <p className="rounded border border-rose-100 bg-rose-50 px-3 py-2 text-sm font-bold text-rose-500">
+            {t("overlay.abilitiesUnavailable")}
+          </p>
+        )}
+        {details && (
+          <div className="grid gap-2">
+            {details.abilities.map((ability) => (
+              <AbilityCard ability={ability} key={`${ability.slot}-${ability.name}`} t={t} />
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function AbilityCard({ ability, t }: { ability: LeagueChampionAbilityView; t: T }) {
+  return (
+    <section className="rounded-md border border-slate-200 bg-white p-2 shadow-sm">
+      <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-2">
+        {ability.iconUrl ? (
+          <img alt="" className="h-11 w-11 rounded border border-slate-300 object-cover" src={ability.iconUrl} />
+        ) : (
+          <div className="flex h-11 w-11 items-center justify-center rounded border border-slate-300 bg-slate-100 text-sm font-black text-slate-500">
+            {ability.slot}
+          </div>
+        )}
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 min-w-8 items-center justify-center rounded bg-blue-50 px-1 text-xs font-black text-blue-500">
+              {ability.slot}
+            </span>
+            <h3 className="truncate text-sm font-black text-slate-900">{ability.name}</h3>
+          </div>
+          <p className="mt-1 text-xs font-medium leading-snug text-slate-600">{ability.description}</p>
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-1 text-[11px] font-bold">
+        <AbilityStat label={t("overlay.cooldown")} value={ability.cooldown} />
+        <AbilityStat label={t("overlay.cost")} value={ability.cost} />
+        <AbilityStat label={t("overlay.range")} value={ability.range} />
+      </div>
+    </section>
+  );
+}
+
+function AbilityStat({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="min-w-0 rounded bg-slate-50 px-1.5 py-1 text-center">
+      <p className="text-slate-400">{label}</p>
+      <p className="truncate text-slate-700">{value ?? "-"}</p>
     </div>
   );
 }
@@ -138,9 +334,11 @@ function MatchRow({ imageUrl, match }: { imageUrl: string | undefined; match: Re
 function SummaryBar({
   allies,
   enemies,
+  t,
 }: {
   allies: Array<ChampSelectPlayer | null>;
   enemies: Array<ChampSelectPlayer | null>;
+  t: T;
 }) {
   const allyWins = teamWins(allies);
   const allyGames = teamGames(allies);
@@ -149,8 +347,8 @@ function SummaryBar({
 
   return (
     <div className="mt-2 flex gap-3">
-      <SummaryCard label="友方胜利次数" tone="ally" value={`${allyWins}/${allyGames}`} />
-      <SummaryCard label="敌方胜利次数" tone="enemy" value={`${enemyWins}/${enemyGames}`} />
+      <SummaryCard label={t("overlay.allyWins")} tone="ally" value={`${allyWins}/${allyGames}`} />
+      <SummaryCard label={t("overlay.enemyWins")} tone="enemy" value={`${enemyWins}/${enemyGames}`} />
     </div>
   );
 }
@@ -160,22 +358,47 @@ function SummaryCard({ label, tone, value }: { label: string; tone: "ally" | "en
     <div className="rounded bg-white px-3 py-1.5 shadow-[0_0_0_1px_rgba(148,163,184,0.25)]">
       <p className="text-xs font-bold text-slate-400">{label}</p>
       <p className={["mt-0.5 text-base font-black", tone === "ally" ? "text-emerald-500" : "text-rose-500"].join(" ")}>
-        {tone === "ally" ? "♧ " : "♤ "}
-        {value}
+        {tone === "ally" ? "+" : "-"} {value}
       </p>
     </div>
   );
 }
 
-function ChampionPortrait({ displayName, src }: { displayName: string; src: string | undefined }) {
-  if (src) {
-    return <img alt="" className="h-14 w-14 rounded border border-slate-300 object-cover shadow-sm" src={src} />;
-  }
+function ChampionPortrait({
+  championId,
+  displayName,
+  isSelected,
+  onSelect,
+  src,
+  t,
+}: {
+  championId: number | null | undefined;
+  displayName: string;
+  isSelected: boolean;
+  onSelect: (event: MouseEvent, championId: number | null | undefined) => void;
+  src: string | undefined;
+  t: T;
+}) {
+  const baseClass = [
+    "flex h-14 w-14 items-center justify-center rounded border object-cover shadow-sm transition",
+    championId ? "cursor-pointer hover:scale-[1.03] hover:border-blue-400" : "cursor-default",
+    isSelected ? "border-blue-500 ring-2 ring-blue-200" : "border-slate-300",
+  ].join(" ");
 
   return (
-    <div className="flex h-14 w-14 items-center justify-center rounded border border-slate-300 bg-slate-200 text-sm font-black text-slate-500 shadow-sm">
-      {initials(displayName)}
-    </div>
+    <button
+      aria-label={championId ? `${t("overlay.viewAbilities")} ${displayName}` : t("overlay.unselected")}
+      className="h-14 w-14 rounded"
+      disabled={!championId}
+      onClick={(event) => onSelect(event, championId)}
+      type="button"
+    >
+      {src ? (
+        <img alt="" className={baseClass} src={src} />
+      ) : (
+        <span className={`${baseClass} bg-slate-200 text-sm font-black text-slate-500`}>{initials(displayName)}</span>
+      )}
+    </button>
   );
 }
 
@@ -193,7 +416,12 @@ function SmallChampionIcon({ championName, src }: { championName: string; src: s
 
 function RankPill({ muted = false, value }: { muted?: boolean; value: string }) {
   return (
-    <div className={["flex h-[1.625rem] min-w-0 items-center justify-center rounded bg-blue-50 px-1 text-sm font-black", muted ? "text-blue-300" : "text-blue-500"].join(" ")}>
+    <div
+      className={[
+        "flex h-[1.625rem] min-w-0 items-center justify-center rounded bg-blue-50 px-1 text-sm font-black",
+        muted ? "text-blue-300" : "text-blue-500",
+      ].join(" ")}
+    >
       <span className="truncate">{value}</span>
     </div>
   );
@@ -242,19 +470,19 @@ function playerBadge(player: ChampSelectPlayer, tone: "ally" | "enemy") {
   return String(Math.max(1, stats.matchCount - wins));
 }
 
-function formatRank(summary: RankedQueueSummary | undefined) {
+function formatRank(summary: RankedQueueSummary | undefined, language: EffectiveLanguage, t: T) {
   if (!summary || !summary.isRanked || !summary.tier) {
-    return "未定级";
+    return t("overlay.unranked");
   }
 
-  const tier = rankTierLabel(summary.tier);
+  const tier = rankTierLabel(summary.tier, language);
   const division = summary.division ? romanToNumber(summary.division) : "";
 
   return `${tier}${division}`;
 }
 
-function rankTierLabel(tier: string) {
-  const labels: Record<string, string> = {
+function rankTierLabel(tier: string, language: EffectiveLanguage) {
+  const zhLabels: Record<string, string> = {
     IRON: "黑铁",
     BRONZE: "青铜",
     SILVER: "白银",
@@ -267,15 +495,29 @@ function rankTierLabel(tier: string) {
     CHALLENGER: "王者",
   };
 
+  const enLabels: Record<string, string> = {
+    IRON: "Iron",
+    BRONZE: "Bronze",
+    SILVER: "Silver",
+    GOLD: "Gold",
+    PLATINUM: "Platinum",
+    EMERALD: "Emerald",
+    DIAMOND: "Diamond",
+    MASTER: "Master",
+    GRANDMASTER: "Grandmaster",
+    CHALLENGER: "Challenger",
+  };
+
+  const labels = language === "zh" ? zhLabels : enLabels;
   return labels[tier.toUpperCase()] ?? tier;
 }
 
 function romanToNumber(value: string) {
   const labels: Record<string, string> = {
-    I: "Ⅰ",
-    II: "Ⅱ",
-    III: "Ⅲ",
-    IV: "Ⅳ",
+    I: "I",
+    II: "II",
+    III: "III",
+    IV: "IV",
   };
 
   return labels[value.toUpperCase()] ?? value;

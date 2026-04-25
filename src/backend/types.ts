@@ -1,6 +1,7 @@
 export type ServiceStatus = "ok" | "degraded";
 export type DatabaseStatus = "ok" | "unavailable";
 export type StartupPage = "dashboard" | "activity" | "settings";
+export type AppLanguagePreference = "system" | "zh" | "en";
 export type ActivityKind = "note" | "settings" | "system";
 export type LeagueClientConnection = "connected" | "unavailable";
 export type LeagueClientPhase =
@@ -30,6 +31,7 @@ export type HealthcheckResult = {
 
 export type AppSettings = {
   startupPage: StartupPage;
+  language: AppLanguagePreference;
   compactMode: boolean;
   activityLimit: number;
   autoAcceptEnabled: boolean;
@@ -42,6 +44,7 @@ export type AppSettings = {
 
 export type SaveSettingsInput = {
   startupPage: StartupPage;
+  language: AppLanguagePreference;
   compactMode: boolean;
   activityLimit: number;
   autoAcceptEnabled: boolean;
@@ -200,6 +203,24 @@ export type LeagueSelfSnapshotInput = {
 export type LeagueChampionSummary = {
   championId: number;
   championName: string;
+};
+
+export type LeagueChampionAbility = {
+  slot: string;
+  name: string;
+  description: string;
+  icon: LeagueImageAsset | null;
+  cooldown: string | null;
+  cost: string | null;
+  range: string | null;
+};
+
+export type LeagueChampionDetails = {
+  championId: number;
+  championName: string;
+  title: string | null;
+  squarePortrait: LeagueImageAsset | null;
+  abilities: LeagueChampionAbility[];
 };
 
 export type LeagueImageAsset = {

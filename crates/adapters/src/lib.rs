@@ -10,11 +10,11 @@ use application::{
     RankedChampionDataProvider, RankedChampionRefreshInput, SummonerBatchEntry,
 };
 use domain::{
-    CurrentSummonerProfile, LeagueChampionSummary, LeagueClientConnection, LeagueClientPhase,
-    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind,
-    LeagueImageAsset, LeagueSelfData, MatchResult, ParticipantRecentStats,
-    RankedChampionDataSnapshot, RankedChampionLane, RankedChampionStat, RankedQueue,
-    RankedQueueSummary, RecentMatchSummary,
+    CurrentSummonerProfile, LeagueChampionAbility, LeagueChampionDetails, LeagueChampionSummary,
+    LeagueClientConnection, LeagueClientPhase, LeagueClientStatus, LeagueDataSection,
+    LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData,
+    MatchResult, ParticipantRecentStats, RankedChampionDataSnapshot, RankedChampionLane,
+    RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -374,6 +374,21 @@ impl LocalLeagueClient {
         session
             .get_image_asset(champion_icon_path(champion_id).as_str(), CHAMPION_ICON_MIME)
             .map_err(read_error_from_request)
+    }
+
+    fn read_champion_details(
+        &self,
+        champion_id: i64,
+    ) -> Result<LeagueChampionDetails, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+        let details = session
+            .get_json::<LcuChampionDetails>(champion_details_path(champion_id).as_str())
+            .map_err(read_error_from_request)?;
+
+        map_champion_details(&session, champion_id, details)
     }
 
     fn read_game_asset(
@@ -830,6 +845,13 @@ impl LeagueClientReader for LocalLeagueClient {
             .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
             .map(map_champion_catalog)
             .map_err(read_error_from_request)
+    }
+
+    fn champion_details(
+        &self,
+        champion_id: i64,
+    ) -> Result<LeagueChampionDetails, LeagueClientReadError> {
+        self.read_champion_details(champion_id)
     }
 
     fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
@@ -1581,6 +1603,30 @@ struct LcuChampionSummary {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuChampionDetails {
+    name: Option<String>,
+    title: Option<String>,
+    square_portrait_path: Option<String>,
+    passive: Option<LcuChampionAbility>,
+    #[serde(default)]
+    spells: Vec<LcuChampionAbility>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuChampionAbility {
+    name: Option<String>,
+    description: Option<String>,
+    dynamic_description: Option<String>,
+    ability_icon_path: Option<String>,
+    spell_key: Option<String>,
+    cooldown: Option<Value>,
+    cost: Option<Value>,
+    range: Option<Value>,
+}
+
 fn map_champion_catalog(champions: Vec<LcuChampionSummary>) -> Vec<LeagueChampionSummary> {
     champions
         .into_iter()
@@ -1590,6 +1636,83 @@ fn map_champion_catalog(champions: Vec<LcuChampionSummary>) -> Vec<LeagueChampio
             champion_name: champion.name.trim().to_string(),
         })
         .collect()
+}
+
+fn map_champion_details(
+    session: &LcuSession,
+    champion_id: i64,
+    details: LcuChampionDetails,
+) -> Result<LeagueChampionDetails, LeagueClientReadError> {
+    let champion_name = non_empty(details.name.as_deref())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Champion {champion_id}"));
+    let square_portrait = details
+        .square_portrait_path
+        .as_deref()
+        .and_then(normalize_lcu_asset_path)
+        .and_then(|path| {
+            session
+                .get_image_asset(path.as_str(), CHAMPION_ICON_MIME)
+                .ok()
+        });
+    let mut abilities = Vec::new();
+
+    if let Some(passive) = details.passive {
+        abilities.push(map_champion_ability(session, "Passive", passive));
+    }
+
+    for (index, spell) in details.spells.into_iter().take(4).enumerate() {
+        let slot = spell
+            .spell_key
+            .as_deref()
+            .and_then(|value| non_empty(Some(value)))
+            .map(str::to_string)
+            .unwrap_or_else(|| ["Q", "W", "E", "R"][index].to_string());
+        abilities.push(map_champion_ability(session, slot.as_str(), spell));
+    }
+
+    Ok(LeagueChampionDetails {
+        champion_id,
+        champion_name,
+        title: details.title.and_then(non_empty_owned),
+        square_portrait,
+        abilities,
+    })
+}
+
+fn map_champion_ability(
+    session: &LcuSession,
+    slot: &str,
+    ability: LcuChampionAbility,
+) -> LeagueChampionAbility {
+    let icon = ability
+        .ability_icon_path
+        .as_deref()
+        .and_then(normalize_lcu_asset_path)
+        .and_then(|path| {
+            session
+                .get_image_asset(path.as_str(), CHAMPION_ICON_MIME)
+                .ok()
+        });
+    let description = ability
+        .dynamic_description
+        .or(ability.description)
+        .map(clean_game_asset_text)
+        .and_then(non_empty_owned)
+        .unwrap_or_else(|| "No description available".to_string());
+
+    LeagueChampionAbility {
+        slot: slot.to_string(),
+        name: ability
+            .name
+            .and_then(non_empty_owned)
+            .unwrap_or_else(|| slot.to_string()),
+        description,
+        icon,
+        cooldown: ability.cooldown.as_ref().and_then(value_as_display_string),
+        cost: ability.cost.as_ref().and_then(value_as_display_string),
+        range: ability.range.as_ref().and_then(value_as_display_string),
+    }
 }
 
 fn champion_name_map(champions: Vec<LcuChampionSummary>) -> HashMap<i64, String> {
@@ -2187,6 +2310,25 @@ fn value_as_string(value: &Value) -> Option<String> {
     }
 }
 
+fn value_as_display_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => non_empty(Some(value.as_str())).map(str::to_string),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .filter_map(value_as_display_string)
+                .collect::<Vec<_>>();
+            if values.is_empty() {
+                None
+            } else {
+                Some(values.join(" / "))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn match_result_from_stats(stats: &LcuParticipantStats) -> MatchResult {
     match stats.win {
         Some(true) => MatchResult::Win,
@@ -2229,6 +2371,10 @@ fn profile_icon_path(profile_icon_id: i64) -> String {
 
 fn champion_icon_path(champion_id: i64) -> String {
     format!("/lol-game-data/assets/v1/champion-icons/{champion_id}.png")
+}
+
+fn champion_details_path(champion_id: i64) -> String {
+    format!("/lol-game-data/assets/v1/champions/{champion_id}.json")
 }
 
 fn current_matches_path(limit: i64) -> String {

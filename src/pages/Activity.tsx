@@ -11,6 +11,7 @@ export function Activity() {
     isActivityLoading,
     createActivityNote,
     loadActivityEntries,
+    t,
   } = useAppState();
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [limit, setLimit] = useState(100);
@@ -59,8 +60,8 @@ export function Activity() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Activity</p>
-            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Local Activity</h1>
+            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">{t("activity.eyebrow")}</p>
+            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("activity.title")}</h1>
           </div>
           <button
             type="button"
@@ -68,16 +69,16 @@ export function Activity() {
             disabled={isActivityLoading}
             className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-300 bg-white px-4 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:text-zinc-400"
           >
-            {isActivityLoading ? "Refreshing" : "Refresh"}
+            {isActivityLoading ? t("common.refreshing") : t("common.refresh")}
           </button>
         </header>
 
         <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
           <form className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm" onSubmit={handleSubmit}>
-            <h2 className="text-base font-semibold text-zinc-950">New Note</h2>
+            <h2 className="text-base font-semibold text-zinc-950">{t("activity.newNote")}</h2>
             <div className="mt-5 grid gap-4">
               <label className="grid gap-2">
-                <span className="text-sm font-medium text-zinc-700">Title</span>
+                <span className="text-sm font-medium text-zinc-700">{t("activity.noteTitle")}</span>
                 <input
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
@@ -86,7 +87,7 @@ export function Activity() {
               </label>
 
               <label className="grid gap-2">
-                <span className="text-sm font-medium text-zinc-700">Body</span>
+                <span className="text-sm font-medium text-zinc-700">{t("activity.body")}</span>
                 <textarea
                   value={body}
                   onChange={(event) => setBody(event.target.value)}
@@ -100,7 +101,7 @@ export function Activity() {
                 disabled={isSubmitting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-rose-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
               >
-                {isSubmitting ? "Saving" : "Save Note"}
+                {isSubmitting ? t("common.saving") : t("activity.saveNote")}
               </button>
             </div>
           </form>
@@ -109,21 +110,21 @@ export function Activity() {
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-5 py-3">
               <div className="flex flex-wrap items-center gap-3">
                 <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
-                  Kind
+                  {t("activity.kind")}
                   <select
                     value={filter}
                     onChange={(event) => setFilter(event.target.value as ActivityFilter)}
                     className="h-9 rounded-md border border-zinc-300 bg-white px-2 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100"
                   >
-                    <option value="all">All</option>
-                    <option value="note">Notes</option>
-                    <option value="settings">Settings</option>
-                    <option value="system">System</option>
+                    <option value="all">{t("activity.all")}</option>
+                    <option value="note">{t("activity.notes")}</option>
+                    <option value="settings">{t("nav.settings")}</option>
+                    <option value="system">{t("activity.system")}</option>
                   </select>
                 </label>
 
                 <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">
-                  Limit
+                  {t("activity.limit")}
                   <input
                     type="number"
                     min={1}
@@ -135,16 +136,16 @@ export function Activity() {
                 </label>
               </div>
               <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                {activityEntries.length} shown
+                {activityEntries.length} {t("activity.shown")}
               </p>
             </div>
 
-            {isActivityLoading && <div className="px-5 py-12 text-center text-sm text-zinc-500">Loading activity</div>}
+            {isActivityLoading && <div className="px-5 py-12 text-center text-sm text-zinc-500">{t("dashboard.loadingActivity")}</div>}
 
             {!isActivityLoading && activityEntries.length === 0 && (
               <div className="px-5 py-12 text-center">
-                <p className="text-sm font-medium text-zinc-600">No activity entries match this view</p>
-                <p className="mt-1 text-sm text-zinc-500">Create a note or adjust the filter.</p>
+                <p className="text-sm font-medium text-zinc-600">{t("activity.noEntries")}</p>
+                <p className="mt-1 text-sm text-zinc-500">{t("activity.emptyHint")}</p>
               </div>
             )}
 

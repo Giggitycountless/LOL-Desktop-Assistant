@@ -6,6 +6,7 @@ import { exportLocalData, importLocalData } from "../backend/dataTools";
 import {
   clearPlayerNote as clearPlayerNoteCommand,
   fetchChampSelectSnapshot,
+  fetchLeagueChampionDetails,
   fetchLeagueChampionIcon,
   fetchLeagueGameAsset,
   fetchLeagueProfileIcon,
@@ -17,14 +18,18 @@ import {
   savePlayerNote as savePlayerNoteCommand,
 } from "../backend/leagueClient";
 import { saveSettings } from "../backend/settings";
+import { createTranslator, resolveEffectiveLanguage, type EffectiveLanguage, type TranslationKey } from "../i18n";
 import { fetchAppState } from "../backend/system";
 import type {
   ActivityEntry,
   ActivityListInput,
   ActivityNoteInput,
   AppSnapshot,
+  AppLanguagePreference,
   ChampSelectSnapshot,
   Feedback,
+  LeagueChampionAbility,
+  LeagueChampionDetails,
   LeagueGameAsset,
   LeagueGameAssetKind,
   LeagueImageAsset,
@@ -51,6 +56,15 @@ export type LeagueGameAssetView = Omit<LeagueGameAsset, "image"> & {
   imageUrl: string;
 };
 
+export type LeagueChampionAbilityView = Omit<LeagueChampionAbility, "icon"> & {
+  iconUrl: string | null;
+};
+
+export type LeagueChampionDetailsView = Omit<LeagueChampionDetails, "squarePortrait" | "abilities"> & {
+  squarePortraitUrl: string | null;
+  abilities: LeagueChampionAbilityView[];
+};
+
 type AppStateContextValue = {
   snapshot: AppSnapshot | null;
   activityEntries: ActivityEntry[];
@@ -59,12 +73,16 @@ type AppStateContextValue = {
   rankedChampionStats: RankedChampionStatsResponse | null;
   postMatchDetails: Record<number, PostMatchDetail>;
   participantProfiles: Record<string, ParticipantPublicProfile>;
+  championDetailsById: Record<number, LeagueChampionDetailsView>;
   leagueImages: LeagueImageUrls;
   isLoading: boolean;
   isActivityLoading: boolean;
   isLeagueClientLoading: boolean;
   isRankedChampionStatsLoading: boolean;
   feedback: Feedback | null;
+  languagePreference: AppLanguagePreference;
+  effectiveLanguage: EffectiveLanguage;
+  t: (key: TranslationKey) => string;
   clearFeedback: () => void;
   refresh: () => Promise<boolean>;
   loadActivityEntries: (input: ActivityListInput) => Promise<boolean>;
@@ -72,12 +90,14 @@ type AppStateContextValue = {
   loadRankedChampionStats: (input: RankedChampionStatsInput) => Promise<boolean>;
   refreshRankedChampionStats: (input: RankedChampionRefreshInput) => Promise<boolean>;
   saveSettings: (settings: SaveSettingsInput) => Promise<boolean>;
+  setLanguagePreference: (language: AppLanguagePreference) => Promise<boolean>;
   createActivityNote: (input: ActivityNoteInput) => Promise<boolean>;
   clearActivityEntries: (confirm: boolean) => Promise<boolean>;
   exportLocalData: () => Promise<string | null>;
   importLocalData: (json: string) => Promise<boolean>;
   loadLeagueProfileIcon: (profileIconId: number | null | undefined) => Promise<boolean>;
   loadLeagueChampionIcon: (championId: number | null | undefined) => Promise<boolean>;
+  loadLeagueChampionDetails: (championId: number | null | undefined) => Promise<boolean>;
   loadLeagueGameAsset: (kind: LeagueGameAssetKind, assetId: number | null | undefined) => Promise<boolean>;
   loadPostMatchDetail: (gameId: number) => Promise<boolean>;
   loadParticipantProfile: (input: ParticipantPublicProfileInput) => Promise<boolean>;
@@ -95,7 +115,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [rankedChampionStats, setRankedChampionStats] = useState<RankedChampionStatsResponse | null>(null);
   const [postMatchDetails, setPostMatchDetails] = useState<Record<number, PostMatchDetail>>({});
   const [participantProfiles, setParticipantProfiles] = useState<Record<string, ParticipantPublicProfile>>({});
+  const [championDetailsById, setChampionDetailsById] = useState<Record<number, LeagueChampionDetailsView>>({});
   const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {}, gameAssets: {} });
+  const championDetailsRef = useRef<Record<number, LeagueChampionDetailsView>>({});
   const pendingImageKeysRef = useRef(new Set<string>());
   const champSelectFingerprintRef = useRef("");
   const [leagueImages, setLeagueImages] = useState<LeagueImageUrls>(imageUrlsRef.current);
@@ -104,6 +126,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [isLeagueClientLoading, setIsLeagueClientLoading] = useState(false);
   const [isRankedChampionStatsLoading, setIsRankedChampionStatsLoading] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const languagePreference = snapshot?.settings.language ?? "system";
+  const effectiveLanguage = useMemo(() => resolveEffectiveLanguage(languagePreference), [languagePreference]);
+  const t = useMemo(() => createTranslator(effectiveLanguage), [effectiveLanguage]);
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -197,6 +222,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       for (const asset of Object.values(imageUrlsRef.current.gameAssets)) {
         URL.revokeObjectURL(asset.imageUrl);
       }
+      for (const details of Object.values(championDetailsRef.current)) {
+        if (details.squarePortraitUrl) {
+          URL.revokeObjectURL(details.squarePortraitUrl);
+        }
+        for (const ability of details.abilities) {
+          if (ability.iconUrl) {
+            URL.revokeObjectURL(ability.iconUrl);
+          }
+        }
+      }
     };
   }, []);
 
@@ -205,14 +240,36 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       try {
         await saveSettings(settings);
         await refresh();
-        setFeedback({ kind: "success", message: "Settings saved" });
+        setFeedback({ kind: "success", message: t("feedback.settingsSaved") });
         return true;
       } catch (caught: unknown) {
         setFeedback({ kind: "error", message: errorMessage(caught) });
         return false;
       }
     },
-    [refresh],
+    [refresh, t],
+  );
+
+  const setLanguagePreferenceAction = useCallback(
+    async (language: AppLanguagePreference) => {
+      const current = snapshot?.settings ?? snapshot?.settingsDefaults;
+      if (!current) {
+        return false;
+      }
+
+      return saveSettingsAction({
+        startupPage: current.startupPage,
+        language,
+        compactMode: current.compactMode,
+        activityLimit: current.activityLimit,
+        autoAcceptEnabled: current.autoAcceptEnabled,
+        autoPickEnabled: current.autoPickEnabled,
+        autoPickChampionId: current.autoPickChampionId,
+        autoBanEnabled: current.autoBanEnabled,
+        autoBanChampionId: current.autoBanChampionId,
+      });
+    },
+    [saveSettingsAction, snapshot?.settings, snapshot?.settingsDefaults],
   );
 
   const createActivityNoteAction = useCallback(
@@ -220,14 +277,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       try {
         await createActivityNote(input);
         await refresh();
-        setFeedback({ kind: "success", message: "Activity note saved" });
+        setFeedback({ kind: "success", message: t("feedback.activityNoteSaved") });
         return true;
       } catch (caught: unknown) {
         setFeedback({ kind: "error", message: errorMessage(caught) });
         return false;
       }
     },
-    [refresh],
+    [refresh, t],
   );
 
   const clearActivityEntriesAction = useCallback(
@@ -252,13 +309,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const exportLocalDataAction = useCallback(async () => {
     try {
       const data = await exportLocalData();
-      setFeedback({ kind: "success", message: "Local data exported" });
+      setFeedback({ kind: "success", message: t("feedback.localDataExported") });
       return JSON.stringify(data, null, 2);
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
       return null;
     }
-  }, []);
+  }, [t]);
 
   const importLocalDataAction = useCallback(
     async (json: string) => {
@@ -332,6 +389,33 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         },
       };
       setLeagueImages(imageUrlsRef.current);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      pendingImageKeysRef.current.delete(key);
+    }
+  }, []);
+
+  const loadLeagueChampionDetailsAction = useCallback(async (championId: number | null | undefined) => {
+    if (!championId || championDetailsRef.current[championId]) {
+      return true;
+    }
+
+    const key = `champion-details:${championId}`;
+    if (pendingImageKeysRef.current.has(key)) {
+      return true;
+    }
+
+    pendingImageKeysRef.current.add(key);
+    try {
+      const details = await fetchLeagueChampionDetails(championId);
+      const view = championDetailsView(details);
+      championDetailsRef.current = {
+        ...championDetailsRef.current,
+        [championId]: view,
+      };
+      setChampionDetailsById(championDetailsRef.current);
       return true;
     } catch {
       return false;
@@ -448,26 +532,26 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       const note = await savePlayerNoteCommand(input);
       await loadPostMatchDetailAction(input.gameId);
       await loadParticipantProfileAction({ gameId: input.gameId, participantId: input.participantId, recentLimit: 6 });
-      setFeedback({ kind: "success", message: "Player note saved" });
+      setFeedback({ kind: "success", message: t("feedback.playerNoteSaved") });
       return note;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
       return null;
     }
-  }, [loadParticipantProfileAction, loadPostMatchDetailAction]);
+  }, [loadParticipantProfileAction, loadPostMatchDetailAction, t]);
 
   const clearPlayerNoteAction = useCallback(async (gameId: number, participantId: number) => {
     try {
       await clearPlayerNoteCommand({ gameId, participantId });
       await loadPostMatchDetailAction(gameId);
       await loadParticipantProfileAction({ gameId, participantId, recentLimit: 6 });
-      setFeedback({ kind: "success", message: "Player note cleared" });
+      setFeedback({ kind: "success", message: t("feedback.playerNoteCleared") });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
       return false;
     }
-  }, [loadParticipantProfileAction, loadPostMatchDetailAction]);
+  }, [loadParticipantProfileAction, loadPostMatchDetailAction, t]);
 
   const value = useMemo<AppStateContextValue>(
     () => ({
@@ -478,12 +562,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       rankedChampionStats,
       postMatchDetails,
       participantProfiles,
+      championDetailsById,
       leagueImages,
       isLoading,
       isActivityLoading,
       isLeagueClientLoading,
       isRankedChampionStatsLoading,
       feedback,
+      languagePreference,
+      effectiveLanguage,
+      t,
       clearFeedback: () => setFeedback(null),
       refresh,
       loadActivityEntries: loadActivityEntriesAction,
@@ -491,12 +579,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       loadRankedChampionStats: loadRankedChampionStatsAction,
       refreshRankedChampionStats: refreshRankedChampionStatsAction,
       saveSettings: saveSettingsAction,
+      setLanguagePreference: setLanguagePreferenceAction,
       createActivityNote: createActivityNoteAction,
       clearActivityEntries: clearActivityEntriesAction,
       exportLocalData: exportLocalDataAction,
       importLocalData: importLocalDataAction,
       loadLeagueProfileIcon: loadLeagueProfileIconAction,
       loadLeagueChampionIcon: loadLeagueChampionIconAction,
+      loadLeagueChampionDetails: loadLeagueChampionDetailsAction,
       loadLeagueGameAsset: loadLeagueGameAssetAction,
       loadPostMatchDetail: loadPostMatchDetailAction,
       loadParticipantProfile: loadParticipantProfileAction,
@@ -506,11 +596,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     [
       activityEntries,
       champSelectSnapshot,
+      championDetailsById,
       clearActivityEntriesAction,
       clearPlayerNoteAction,
       createActivityNoteAction,
       exportLocalDataAction,
       feedback,
+      languagePreference,
+      effectiveLanguage,
       importLocalDataAction,
       isActivityLoading,
       isLeagueClientLoading,
@@ -520,6 +613,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       leagueSelfSnapshot,
       loadRankedChampionStatsAction,
       loadLeagueChampionIconAction,
+      loadLeagueChampionDetailsAction,
       loadLeagueGameAssetAction,
       loadActivityEntriesAction,
       loadLeagueProfileIconAction,
@@ -533,7 +627,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       refreshRankedChampionStatsAction,
       savePlayerNoteAction,
       saveSettingsAction,
+      setLanguagePreferenceAction,
       snapshot,
+      t,
     ],
   );
 
@@ -560,6 +656,24 @@ function errorMessage(error: unknown) {
 
 function imageAssetUrl(asset: LeagueImageAsset) {
   return URL.createObjectURL(new Blob([Uint8Array.from(asset.bytes)], { type: asset.mimeType }));
+}
+
+function championDetailsView(details: LeagueChampionDetails): LeagueChampionDetailsView {
+  return {
+    championId: details.championId,
+    championName: details.championName,
+    title: details.title,
+    squarePortraitUrl: details.squarePortrait ? imageAssetUrl(details.squarePortrait) : null,
+    abilities: details.abilities.map((ability) => ({
+      slot: ability.slot,
+      name: ability.name,
+      description: ability.description,
+      cooldown: ability.cooldown,
+      cost: ability.cost,
+      range: ability.range,
+      iconUrl: ability.icon ? imageAssetUrl(ability.icon) : null,
+    })),
+  };
 }
 
 function participantProfileKey(gameId: number, participantId: number) {

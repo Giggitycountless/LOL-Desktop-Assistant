@@ -1,7 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { fetchLeagueChampionCatalog } from "../backend/leagueClient";
-import type { LeagueChampionSummary, SaveSettingsInput, StartupPage } from "../backend/types";
+import type { AppLanguagePreference, LeagueChampionSummary, SaveSettingsInput, StartupPage } from "../backend/types";
+import type { TranslationKey } from "../i18n";
 import { useAppState } from "../state/AppStateProvider";
 
 const MIN_ACTIVITY_LIMIT = 1;
@@ -14,9 +15,11 @@ export function Settings() {
     exportLocalData,
     importLocalData,
     clearActivityEntries,
+    t,
   } = useAppState();
   const [draft, setDraft] = useState<SaveSettingsInput>({
     startupPage: "dashboard",
+    language: "system",
     compactMode: false,
     activityLimit: 100,
     autoAcceptEnabled: true,
@@ -42,6 +45,7 @@ export function Settings() {
     if (persisted) {
       setDraft({
         startupPage: persisted.startupPage,
+        language: persisted.language,
         compactMode: persisted.compactMode,
         activityLimit: persisted.activityLimit,
         autoAcceptEnabled: persisted.autoAcceptEnabled,
@@ -79,10 +83,11 @@ export function Settings() {
     };
   }, []);
 
-  const validationMessage = useMemo(() => validateDraft(draft), [draft]);
+  const validationMessage = useMemo(() => validateDraft(draft, t), [draft, t]);
   const hasUnsavedChanges = Boolean(
     persisted &&
       (draft.startupPage !== persisted.startupPage ||
+        draft.language !== persisted.language ||
         draft.compactMode !== persisted.compactMode ||
         draft.activityLimit !== persisted.activityLimit ||
         draft.autoAcceptEnabled !== persisted.autoAcceptEnabled ||
@@ -160,17 +165,17 @@ export function Settings() {
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
         <header>
-          <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Settings</p>
-          <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Preferences</h1>
+          <p className="text-sm font-medium uppercase tracking-wide text-rose-700">{t("settings.eyebrow")}</p>
+          <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("settings.title")}</h1>
         </header>
 
         <section className="grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
           <form className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm" onSubmit={handleSubmit}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-base font-semibold text-zinc-950">Application State</h2>
+                <h2 className="text-base font-semibold text-zinc-950">{t("settings.applicationState")}</h2>
                 <p className="mt-1 text-sm text-zinc-500">
-                  {hasUnsavedChanges ? "Unsaved changes" : "Current settings are saved"}
+                  {hasUnsavedChanges ? t("settings.unsaved") : t("settings.saved")}
                 </p>
               </div>
               <button
@@ -179,13 +184,13 @@ export function Settings() {
                 onClick={() => defaults && setDraft(defaults)}
                 className="inline-flex h-9 items-center justify-center rounded-md border border-zinc-300 px-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:text-zinc-400"
               >
-                Reset
+                {t("settings.reset")}
               </button>
             </div>
 
             <div className="mt-5 grid gap-4">
               <label className="grid gap-2">
-                <span className="text-sm font-medium text-zinc-700">Startup page</span>
+                <span className="text-sm font-medium text-zinc-700">{t("settings.startupPage")}</span>
                 <select
                   value={draft.startupPage}
                   onChange={(event) =>
@@ -196,14 +201,32 @@ export function Settings() {
                   }
                   className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100"
                 >
-                  <option value="dashboard">Dashboard</option>
-                  <option value="activity">Activity</option>
-                  <option value="settings">Settings</option>
+                  <option value="dashboard">{t("nav.dashboard")}</option>
+                  <option value="activity">{t("nav.activity")}</option>
+                  <option value="settings">{t("nav.settings")}</option>
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm font-medium text-zinc-700">{t("settings.language")}</span>
+                <select
+                  value={draft.language}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      language: event.target.value as AppLanguagePreference,
+                    }))
+                  }
+                  className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100"
+                >
+                  <option value="system">{t("settings.languageSystem")}</option>
+                  <option value="zh">{t("settings.languageZh")}</option>
+                  <option value="en">{t("settings.languageEn")}</option>
                 </select>
               </label>
 
               <label className="flex items-center justify-between gap-4 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
-                <span className="text-sm font-medium text-zinc-700">Compact mode</span>
+                <span className="text-sm font-medium text-zinc-700">{t("settings.compactMode")}</span>
                 <input
                   type="checkbox"
                   checked={draft.compactMode}
@@ -218,7 +241,7 @@ export function Settings() {
               </label>
 
               <label className="grid gap-2">
-                <span className="text-sm font-medium text-zinc-700">Activity limit</span>
+                <span className="text-sm font-medium text-zinc-700">{t("settings.activityLimit")}</span>
                 <input
                   type="number"
                   min={MIN_ACTIVITY_LIMIT}
@@ -236,9 +259,9 @@ export function Settings() {
               </label>
 
               <div className="grid gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4">
-                <h3 className="text-sm font-semibold text-zinc-950">Lobby Automation</h3>
+                <h3 className="text-sm font-semibold text-zinc-950">{t("settings.lobbyAutomation")}</h3>
                 <label className="flex items-center justify-between gap-4">
-                  <span className="text-sm font-medium text-zinc-700">Auto accept match</span>
+                  <span className="text-sm font-medium text-zinc-700">{t("settings.autoAccept")}</span>
                   <input
                     type="checkbox"
                     checked={draft.autoAcceptEnabled}
@@ -253,7 +276,9 @@ export function Settings() {
                 </label>
 
                 <AutomationChampionPicker
-                  label="Auto pick champion"
+                  label={t("settings.autoPick")}
+                  loadingLabel={t("settings.loadingChampions")}
+                  searchLabel={t("settings.searchChampion")}
                   enabled={draft.autoPickEnabled}
                   championId={draft.autoPickChampionId}
                   champions={champions}
@@ -273,7 +298,9 @@ export function Settings() {
                 />
 
                 <AutomationChampionPicker
-                  label="Auto ban champion"
+                  label={t("settings.autoBan")}
+                  loadingLabel={t("settings.loadingChampions")}
+                  searchLabel={t("settings.searchChampion")}
                   enabled={draft.autoBanEnabled}
                   championId={draft.autoBanChampionId}
                   champions={champions}
@@ -298,28 +325,29 @@ export function Settings() {
                 disabled={!canSave}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-rose-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
               >
-                {isSaving ? "Saving" : "Save Settings"}
+                {isSaving ? t("common.saving") : t("settings.saveSettings")}
               </button>
             </div>
           </form>
 
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Current Values</h2>
+            <h2 className="text-base font-semibold text-zinc-950">{t("settings.currentValues")}</h2>
             <dl className="mt-5 grid gap-4">
-              <SettingRow label="Startup page" value={persisted?.startupPage ?? "Loading"} />
-              <SettingRow label="Compact mode" value={persisted?.compactMode ? "On" : "Off"} />
-              <SettingRow label="Activity limit" value={persisted ? String(persisted.activityLimit) : "Loading"} />
-              <SettingRow label="Auto accept" value={persisted ? (persisted.autoAcceptEnabled ? "On" : "Off") : "Loading"} />
-              <SettingRow label="Auto pick" value={persisted ? automationSummary(persisted.autoPickEnabled, persisted.autoPickChampionId, champions) : "Loading"} />
-              <SettingRow label="Auto ban" value={persisted ? automationSummary(persisted.autoBanEnabled, persisted.autoBanChampionId, champions) : "Loading"} />
-              <SettingRow label="Updated" value={persisted?.updatedAt ?? "Loading"} />
+              <SettingRow label={t("settings.startupPage")} value={persisted ? startupPageLabel(persisted.startupPage, t) : t("common.loading")} />
+              <SettingRow label={t("settings.language")} value={persisted ? languageLabel(persisted.language, t) : t("common.loading")} />
+              <SettingRow label={t("settings.compactMode")} value={persisted?.compactMode ? t("common.on") : t("common.off")} />
+              <SettingRow label={t("settings.activityLimit")} value={persisted ? String(persisted.activityLimit) : t("common.loading")} />
+              <SettingRow label={t("settings.autoAcceptShort")} value={persisted ? (persisted.autoAcceptEnabled ? t("common.on") : t("common.off")) : t("common.loading")} />
+              <SettingRow label={t("settings.autoPickShort")} value={persisted ? automationSummary(persisted.autoPickEnabled, persisted.autoPickChampionId, champions, t) : t("common.loading")} />
+              <SettingRow label={t("settings.autoBanShort")} value={persisted ? automationSummary(persisted.autoBanEnabled, persisted.autoBanChampionId, champions, t) : t("common.loading")} />
+              <SettingRow label={t("dashboard.updated")} value={persisted?.updatedAt ?? t("common.loading")} />
             </dl>
           </div>
         </section>
 
         <section className="grid gap-4 lg:grid-cols-2">
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Export Local Data</h2>
+            <h2 className="text-base font-semibold text-zinc-950">{t("settings.exportLocalData")}</h2>
             <div className="mt-5 grid gap-4">
               <button
                 type="button"
@@ -327,7 +355,7 @@ export function Settings() {
                 disabled={isExporting}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-zinc-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
               >
-                {isExporting ? "Exporting" : "Export JSON"}
+                {isExporting ? t("common.exporting") : t("settings.exportJson")}
               </button>
               <textarea
                 value={exportJson}
@@ -339,7 +367,7 @@ export function Settings() {
           </div>
 
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Import And Clear</h2>
+            <h2 className="text-base font-semibold text-zinc-950">{t("settings.importAndClear")}</h2>
             <div className="mt-5 grid gap-4">
               <textarea
                 value={importJson}
@@ -353,7 +381,7 @@ export function Settings() {
                 disabled={isImporting || importJson.trim().length === 0}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-rose-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-rose-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
               >
-                {isImporting ? "Importing" : "Import JSON"}
+                {isImporting ? t("common.importing") : t("settings.importJson")}
               </button>
 
               <div className="rounded-md border border-amber-200 bg-amber-50 p-4">
@@ -364,7 +392,7 @@ export function Settings() {
                     onChange={(event) => setConfirmClear(event.target.checked)}
                     className="h-5 w-5 accent-amber-700"
                   />
-                  Confirm clearing local activity
+                  {t("settings.confirmClear")}
                 </label>
                 <button
                   type="button"
@@ -372,7 +400,7 @@ export function Settings() {
                   disabled={!confirmClear || isClearing}
                   className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-amber-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:bg-zinc-300"
                 >
-                  {isClearing ? "Clearing" : "Clear Activity"}
+                  {isClearing ? t("common.clear") : t("settings.clearActivity")}
                 </button>
               </div>
             </div>
@@ -394,6 +422,8 @@ function SettingRow({ label, value }: { label: string; value: string }) {
 
 function AutomationChampionPicker({
   label,
+  loadingLabel,
+  searchLabel,
   enabled,
   championId,
   champions,
@@ -402,6 +432,8 @@ function AutomationChampionPicker({
   onChampionChange,
 }: {
   label: string;
+  loadingLabel: string;
+  searchLabel: string;
   enabled: boolean;
   championId: number | null;
   champions: LeagueChampionSummary[];
@@ -440,7 +472,7 @@ function AutomationChampionPicker({
           list={listId}
           value={query}
           disabled={!enabled}
-          placeholder={isLoading ? "Loading champions" : "Search champion"}
+          placeholder={isLoading ? loadingLabel : searchLabel}
           onChange={(event) => handleQueryChange(event.target.value)}
           className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
         />
@@ -454,21 +486,21 @@ function AutomationChampionPicker({
   );
 }
 
-function validateDraft(draft: SaveSettingsInput) {
+function validateDraft(draft: SaveSettingsInput, t: (key: TranslationKey) => string) {
   if (!Number.isInteger(draft.activityLimit)) {
-    return "Activity limit must be a whole number";
+    return t("settings.validationInteger");
   }
 
   if (draft.activityLimit < MIN_ACTIVITY_LIMIT || draft.activityLimit > MAX_ACTIVITY_LIMIT) {
-    return `Activity limit must be between ${MIN_ACTIVITY_LIMIT} and ${MAX_ACTIVITY_LIMIT}`;
+    return `${t("settings.activityLimit")} ${MIN_ACTIVITY_LIMIT}-${MAX_ACTIVITY_LIMIT}`;
   }
 
   if (draft.autoPickEnabled && !draft.autoPickChampionId) {
-    return "Auto pick requires a champion";
+    return t("settings.validationPick");
   }
 
   if (draft.autoBanEnabled && !draft.autoBanChampionId) {
-    return "Auto ban requires a champion";
+    return t("settings.validationBan");
   }
 
   return null;
@@ -496,11 +528,34 @@ function automationSummary(
   enabled: boolean | undefined,
   championId: number | null | undefined,
   champions: LeagueChampionSummary[],
+  t: (key: TranslationKey) => string,
 ) {
   if (!enabled) {
-    return "Off";
+    return t("common.off");
   }
 
   const champion = champions.find((record) => record.championId === championId);
-  return champion?.championName ?? (championId ? String(championId) : "No champion");
+  return champion?.championName ?? (championId ? String(championId) : t("settings.noChampion"));
+}
+
+function startupPageLabel(page: StartupPage, t: (key: TranslationKey) => string) {
+  switch (page) {
+    case "dashboard":
+      return t("nav.dashboard");
+    case "activity":
+      return t("nav.activity");
+    case "settings":
+      return t("nav.settings");
+  }
+}
+
+function languageLabel(language: AppLanguagePreference, t: (key: TranslationKey) => string) {
+  switch (language) {
+    case "system":
+      return t("settings.languageSystem");
+    case "zh":
+      return t("settings.languageZh");
+    case "en":
+      return t("settings.languageEn");
+  }
 }

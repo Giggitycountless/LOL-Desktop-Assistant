@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { useAppState } from "../state/AppStateProvider";
 import type { KdaTag, RankedQueue, RankedQueueSummary, RecentChampionSummary } from "../backend/types";
+import type { TranslationKey } from "../i18n";
 import { openSelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindow";
 
 export function Profile() {
@@ -12,6 +13,7 @@ export function Profile() {
     loadLeagueChampionIcon,
     loadLeagueProfileIcon,
     refreshLeagueClient,
+    t,
   } = useAppState();
   const league = leagueSelfSnapshot;
   const summoner = league?.summoner ?? null;
@@ -36,8 +38,8 @@ export function Profile() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-7">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Profile</p>
-            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Current Summoner</h1>
+            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">{t("profile.eyebrow")}</p>
+            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("profile.title")}</h1>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -46,7 +48,7 @@ export function Profile() {
               type="button"
             >
               <WindowIcon />
-              Open Floating Window
+              {t("profile.openOverlay")}
             </button>
             <button
               className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
@@ -55,14 +57,14 @@ export function Profile() {
               type="button"
             >
               <RefreshIcon />
-              {isLeagueClientLoading ? "Refreshing" : "Refresh"}
+              {isLeagueClientLoading ? t("common.refreshing") : t("common.refresh")}
             </button>
           </div>
         </header>
 
-        {!league && isLeagueClientLoading && <StatePanel title="Loading profile" body="Reading local League Client data" />}
+        {!league && isLeagueClientLoading && <StatePanel title={t("profile.loading")} body={t("profile.readingClient")} />}
         {league && !summoner && (
-          <StatePanel title={profileStateTitle(league.status.phase)} body={league.status.message ?? "Profile data is unavailable"} />
+          <StatePanel title={profileStateTitle(league.status.phase, t)} body={league.status.message ?? t("profile.unavailable")} />
         )}
 
         {league && summoner && (
@@ -78,23 +80,23 @@ export function Profile() {
                   />
                   <div className="min-w-0">
                     <p className="truncate text-2xl font-semibold text-zinc-950">{summoner.displayName}</p>
-                    <p className="mt-1 text-sm font-medium text-zinc-500">Level {summoner.summonerLevel}</p>
+                    <p className="mt-1 text-sm font-medium text-zinc-500">{t("profile.level")} {summoner.summonerLevel}</p>
                   </div>
                 </div>
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <Metric label="Client" value={formatLeaguePhase(league.status.phase)} />
-                  <Metric label="Updated" value={formatTimestamp(league.refreshedAt)} />
+                  <Metric label={t("profile.client")} value={formatLeaguePhase(league.status.phase, t)} />
+                  <Metric label={t("dashboard.updated")} value={formatTimestamp(league.refreshedAt, t)} />
                 </div>
               </div>
 
               <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h2 className="text-base font-semibold text-zinc-950">Recent 6 Performance</h2>
-                    <p className="mt-1 text-sm text-zinc-500">{performanceLabel(league.recentPerformance.matchCount)}</p>
+                    <h2 className="text-base font-semibold text-zinc-950">{t("profile.recentPerformance")}</h2>
+                    <p className="mt-1 text-sm text-zinc-500">{performanceLabel(league.recentPerformance.matchCount, t)}</p>
                   </div>
-                  <KdaBadge tag={league.recentPerformance.kdaTag} value={league.recentPerformance.averageKda} />
+                  <KdaBadge tag={league.recentPerformance.kdaTag} value={league.recentPerformance.averageKda} t={t} />
                 </div>
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -104,18 +106,19 @@ export function Profile() {
                         champion={champion}
                         imageUrl={champion.championId ? leagueImages.championIcons[champion.championId] : undefined}
                         key={`${champion.championId ?? champion.championName}-${champion.championName}`}
+                        t={t}
                       />
                     ))
                   ) : (
-                    <p className="text-sm text-zinc-500 sm:col-span-3">No recent champion data available</p>
+                    <p className="text-sm text-zinc-500 sm:col-span-3">{t("profile.noRecentChampion")}</p>
                   )}
                 </div>
               </div>
             </section>
 
             <section className="grid gap-4 md:grid-cols-2">
-              <RankedCard label="Solo/Duo" queue="soloDuo" summary={soloDuo} />
-              <RankedCard label="Flex" queue="flex" summary={flex} />
+              <RankedCard label={t("profile.soloDuo")} queue="soloDuo" summary={soloDuo} t={t} />
+              <RankedCard label={t("profile.flex")} queue="flex" summary={flex} t={t} />
             </section>
           </>
         )}
@@ -124,29 +127,29 @@ export function Profile() {
   );
 }
 
-function ChampionCard({ champion, imageUrl }: { champion: RecentChampionSummary; imageUrl: string | undefined }) {
+function ChampionCard({ champion, imageUrl, t }: { champion: RecentChampionSummary; imageUrl: string | undefined; t: (key: TranslationKey) => string }) {
   return (
     <div className="flex min-w-0 items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
       <LeagueImage alt={`${champion.championName} icon`} fallback={initials(champion.championName)} size="small" src={imageUrl} />
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold text-zinc-950">{champion.championName}</p>
-        <p className="mt-1 text-xs font-medium text-zinc-500">{champion.games} recent {champion.games === 1 ? "game" : "games"}</p>
+        <p className="mt-1 text-xs font-medium text-zinc-500">{champion.games} {t("participant.recentMatches")}</p>
       </div>
     </div>
   );
 }
 
-function RankedCard({ label, queue, summary }: { label: string; queue: RankedQueue; summary: RankedQueueSummary | undefined }) {
+function RankedCard({ label, queue, summary, t }: { label: string; queue: RankedQueue; summary: RankedQueueSummary | undefined; t: (key: TranslationKey) => string }) {
   return (
     <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
       <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-zinc-950">{formatRank(summary)}</p>
+      <p className="mt-2 text-2xl font-semibold text-zinc-950">{formatRank(summary, t)}</p>
       <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <Metric label="Wins" value={summary ? String(summary.wins) : "0"} />
-        <Metric label="Losses" value={summary ? String(summary.losses) : "0"} />
-        <Metric label="Win rate" value={summary ? formatWinRate(summary) : "0%"} />
+        <Metric label={t("profile.wins")} value={summary ? String(summary.wins) : "0"} />
+        <Metric label={t("profile.losses")} value={summary ? String(summary.losses) : "0"} />
+        <Metric label={t("profile.winRate")} value={summary ? formatWinRate(summary) : "0%"} />
       </div>
-      <p className="mt-4 text-sm text-zinc-500">{queue === "soloDuo" ? "Ranked Solo/Duo" : "Ranked Flex"}</p>
+      <p className="mt-4 text-sm text-zinc-500">{queue === "soloDuo" ? t("profile.rankedSolo") : t("profile.rankedFlex")}</p>
     </div>
   );
 }
@@ -168,14 +171,14 @@ function LeagueImage({ alt, fallback, size, src }: { alt: string; fallback: stri
   );
 }
 
-function KdaBadge({ tag, value }: { tag: KdaTag; value: number | null }) {
+function KdaBadge({ tag, value, t }: { tag: KdaTag; value: number | null; t: (key: TranslationKey) => string }) {
   const tone =
     tag === "high"
       ? "border-emerald-200 bg-emerald-50 text-emerald-800"
       : tag === "standard"
         ? "border-amber-200 bg-amber-50 text-amber-800"
         : "border-zinc-200 bg-white text-zinc-600";
-  const label = value === null ? "KDA unavailable" : `Avg KDA ${value.toFixed(1)}`;
+  const label = value === null ? `KDA ${t("common.unavailable")}` : `Avg KDA ${value.toFixed(1)}`;
 
   return <span className={["rounded-md border px-2.5 py-1 text-xs font-semibold", tone].join(" ")}>{label}</span>;
 }
@@ -226,9 +229,9 @@ function WindowIcon() {
   );
 }
 
-function formatRank(summary: RankedQueueSummary | undefined) {
+function formatRank(summary: RankedQueueSummary | undefined, t: (key: TranslationKey) => string) {
   if (!summary || !summary.isRanked || !summary.tier) {
-    return "Unranked";
+    return t("profile.unranked");
   }
 
   const division = summary.division ? ` ${summary.division}` : "";
@@ -247,30 +250,30 @@ function formatWinRate(summary: RankedQueueSummary) {
   return `${Math.round((summary.wins / total) * 100)}%`;
 }
 
-function profileStateTitle(phase: string) {
+function profileStateTitle(phase: string, t: (key: TranslationKey) => string) {
   if (phase === "notLoggedIn") {
-    return "Login required";
+    return t("profile.loginRequired");
   }
 
   if (phase === "notRunning") {
-    return "League Client not running";
+    return t("profile.clientNotRunning");
   }
 
-  return "Profile unavailable";
+  return t("profile.unavailable");
 }
 
-function performanceLabel(matchCount: number) {
+function performanceLabel(matchCount: number, t: (key: TranslationKey) => string) {
   if (matchCount === 0) {
-    return "No recent matches included";
+    return t("profile.noRecentChampion");
   }
 
-  return `${matchCount} recent ${matchCount === 1 ? "match" : "matches"} included`;
+  return `${matchCount} ${t("participant.recentMatches")}`;
 }
 
-function formatLeaguePhase(phase: string) {
+function formatLeaguePhase(phase: string, t: (key: TranslationKey) => string) {
   switch (phase) {
     case "connected":
-      return "Connected";
+      return t("common.connected");
     case "partialData":
       return "Partial data";
     case "notLoggedIn":
@@ -280,13 +283,13 @@ function formatLeaguePhase(phase: string) {
     case "notRunning":
       return "Not running";
     default:
-      return "Unavailable";
+      return t("common.unavailable");
   }
 }
 
-function formatTimestamp(value: string | null | undefined) {
+function formatTimestamp(value: string | null | undefined, t: (key: TranslationKey) => string) {
   if (!value) {
-    return "Pending";
+    return t("common.pending");
   }
 
   const numeric = Number(value);

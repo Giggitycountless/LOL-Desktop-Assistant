@@ -5,9 +5,9 @@ use std::{
 };
 
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, ImportLocalDataResult, LocalActivityEntry,
-    NewActivityEntry, RankedChampionDataSnapshot, RankedChampionLane, RankedChampionStat,
-    SettingsValues, StartupPage,
+    ActivityEntry, ActivityKind, AppLanguagePreference, AppSettings, ImportLocalDataResult,
+    LocalActivityEntry, NewActivityEntry, RankedChampionDataSnapshot, RankedChampionLane,
+    RankedChampionStat, SettingsValues, StartupPage,
 };
 use rusqlite::{Connection, OptionalExtension};
 
@@ -17,6 +17,7 @@ const MIGRATION_0002: &str = include_str!("../migrations/0002_state_foundation.s
 const MIGRATION_0003: &str = include_str!("../migrations/0003_player_notes.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_ranked_champion_cache.sql");
 const MIGRATION_0005: &str = include_str!("../migrations/0005_lobby_automation_settings.sql");
+const MIGRATION_0006: &str = include_str!("../migrations/0006_language_preference.sql");
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -192,6 +193,7 @@ pub enum StorageError {
     Sqlite(rusqlite::Error),
     InvalidActivityKind(String),
     InvalidStartupPage(String),
+    InvalidLanguagePreference(String),
     MissingSchemaVersion,
     MissingPlayerNote,
     InvalidPlayerTags(String),
@@ -206,6 +208,9 @@ impl fmt::Display for StorageError {
             Self::Sqlite(error) => write!(formatter, "sqlite error: {error}"),
             Self::InvalidActivityKind(value) => write!(formatter, "invalid activity kind: {value}"),
             Self::InvalidStartupPage(value) => write!(formatter, "invalid startup page: {value}"),
+            Self::InvalidLanguagePreference(value) => {
+                write!(formatter, "invalid language preference: {value}")
+            }
             Self::MissingSchemaVersion => write!(formatter, "schema version metadata is missing"),
             Self::MissingPlayerNote => write!(formatter, "player note is missing after save"),
             Self::InvalidPlayerTags(error) => write!(formatter, "invalid player tags: {error}"),
@@ -226,6 +231,7 @@ impl Error for StorageError {
             Self::Sqlite(error) => Some(error),
             Self::InvalidActivityKind(_)
             | Self::InvalidStartupPage(_)
+            | Self::InvalidLanguagePreference(_)
             | Self::MissingSchemaVersion
             | Self::MissingPlayerNote
             | Self::InvalidPlayerTags(_)
@@ -289,6 +295,11 @@ fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
             description: "lobby_automation_settings",
             sql: MIGRATION_0005,
         },
+        Migration {
+            version: 6,
+            description: "language_preference",
+            sql: MIGRATION_0006,
+        },
     ] {
         let migration_is_applied = transaction
             .query_row(
@@ -332,7 +343,7 @@ fn read_schema_version(connection: &Connection) -> StorageResult<i64> {
 fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
     connection
         .query_row(
-            "SELECT startup_page, compact_mode, activity_limit, auto_accept_enabled,
+            "SELECT startup_page, language, compact_mode, activity_limit, auto_accept_enabled,
                 auto_pick_enabled, auto_pick_champion_id, auto_ban_enabled,
                 auto_ban_champion_id, updated_at
             FROM app_settings
@@ -340,17 +351,19 @@ fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
             [],
             |row| {
                 let startup_page: String = row.get(0)?;
+                let language: String = row.get(1)?;
 
                 Ok((
                     startup_page,
-                    row.get::<_, i64>(1)?,
+                    language,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, String>(9)?,
                 ))
             },
         )
@@ -358,6 +371,7 @@ fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
         .and_then(
             |(
                 startup_page,
+                language,
                 compact_mode,
                 activity_limit,
                 auto_accept_enabled,
@@ -369,9 +383,12 @@ fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
             )| {
                 let startup_page = StartupPage::parse(startup_page.as_str())
                     .ok_or(StorageError::InvalidStartupPage(startup_page))?;
+                let language = AppLanguagePreference::parse(language.as_str())
+                    .ok_or(StorageError::InvalidLanguagePreference(language))?;
 
                 Ok(AppSettings {
                     startup_page,
+                    language,
                     compact_mode: int_to_bool(compact_mode),
                     activity_limit,
                     auto_accept_enabled: int_to_bool(auto_accept_enabled),
@@ -389,17 +406,19 @@ fn write_settings(connection: &Connection, settings: &SettingsValues) -> Storage
     connection.execute(
         "UPDATE app_settings
         SET startup_page = ?1,
-            compact_mode = ?2,
-            activity_limit = ?3,
-            auto_accept_enabled = ?4,
-            auto_pick_enabled = ?5,
-            auto_pick_champion_id = ?6,
-            auto_ban_enabled = ?7,
-            auto_ban_champion_id = ?8,
+            language = ?2,
+            compact_mode = ?3,
+            activity_limit = ?4,
+            auto_accept_enabled = ?5,
+            auto_pick_enabled = ?6,
+            auto_pick_champion_id = ?7,
+            auto_ban_enabled = ?8,
+            auto_ban_champion_id = ?9,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = 1",
         (
             settings.startup_page.as_str(),
+            settings.language.as_str(),
             bool_to_int(settings.compact_mode),
             settings.activity_limit,
             bool_to_int(settings.auto_accept_enabled),
@@ -844,9 +863,13 @@ mod tests {
         let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
 
         assert!(store.database_path().exists());
-        assert_eq!(store.health().expect("storage health").schema_version, 5);
+        assert_eq!(store.health().expect("storage health").schema_version, 6);
         assert_eq!(store.get_settings().expect("settings").activity_limit, 100);
-        assert_eq!(migration_count(store.database_path()), 5);
+        assert_eq!(
+            store.get_settings().expect("settings").language,
+            AppLanguagePreference::System
+        );
+        assert_eq!(migration_count(store.database_path()), 6);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -859,8 +882,8 @@ mod tests {
         let second = SqliteStore::initialize(&data_dir).expect("second initialization");
 
         assert_eq!(first.database_path(), second.database_path());
-        assert_eq!(second.health().expect("storage health").schema_version, 5);
-        assert_eq!(migration_count(second.database_path()), 5);
+        assert_eq!(second.health().expect("storage health").schema_version, 6);
+        assert_eq!(migration_count(second.database_path()), 6);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -894,12 +917,16 @@ mod tests {
 
         let store = SqliteStore::initialize(&data_dir).expect("upgrade database");
 
-        assert_eq!(store.health().expect("storage health").schema_version, 5);
+        assert_eq!(store.health().expect("storage health").schema_version, 6);
         assert_eq!(
             store.get_settings().expect("settings").startup_page,
             StartupPage::Dashboard
         );
-        assert_eq!(migration_count(store.database_path()), 5);
+        assert_eq!(
+            store.get_settings().expect("settings").language,
+            AppLanguagePreference::System
+        );
+        assert_eq!(migration_count(store.database_path()), 6);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -912,6 +939,7 @@ mod tests {
         let settings = store
             .save_settings(&SettingsValues {
                 startup_page: StartupPage::Activity,
+                language: AppLanguagePreference::Zh,
                 compact_mode: true,
                 activity_limit: 25,
                 auto_accept_enabled: false,
@@ -923,6 +951,7 @@ mod tests {
             .expect("settings saved");
 
         assert_eq!(settings.startup_page, StartupPage::Activity);
+        assert_eq!(settings.language, AppLanguagePreference::Zh);
         assert!(settings.compact_mode);
         assert!(!settings.auto_accept_enabled);
         assert!(settings.auto_pick_enabled);
@@ -1005,6 +1034,7 @@ mod tests {
             .import_local_data(
                 &SettingsValues {
                     startup_page: StartupPage::Activity,
+                    language: AppLanguagePreference::En,
                     compact_mode: true,
                     activity_limit: 25,
                     auto_accept_enabled: true,
@@ -1026,6 +1056,7 @@ mod tests {
 
         assert_eq!(result.imported_activity_count, 1);
         assert_eq!(result.settings.startup_page, StartupPage::Activity);
+        assert_eq!(result.settings.language, AppLanguagePreference::En);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].created_at, "2026-04-19 12:00:00");
 

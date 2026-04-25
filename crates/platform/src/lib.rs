@@ -8,16 +8,16 @@ use std::{
 
 use adapters::{LocalLeagueClient, RemoteRankedChampionJsonProvider};
 use application::{
-    ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
-    LeagueClientReadError, LeagueClientReader, LeagueGameAssetInput, LeagueProfileIconInput,
-    LeagueSelfSnapshotInput, ParticipantPublicProfileInput, PostMatchDetailInput,
-    RankedChampionRefreshInput, RankedChampionStatsInput, SettingsInput,
+    ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionDetailsInput,
+    LeagueChampionIconInput, LeagueClientReadError, LeagueClientReader, LeagueGameAssetInput,
+    LeagueProfileIconInput, LeagueSelfSnapshotInput, ParticipantPublicProfileInput,
+    PostMatchDetailInput, RankedChampionRefreshInput, RankedChampionStatsInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
     ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult,
-    LeagueChampionSummary, LeagueClientStatus, LeagueGameAsset, LeagueGameAssetKind,
-    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalDataExport,
+    LeagueChampionDetails, LeagueChampionSummary, LeagueClientStatus, LeagueGameAsset,
+    LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalDataExport,
     ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteView, PostMatchDetail,
     RankedChampionLane, RankedChampionSort, RankedChampionStatsResponse, SettingsValues,
 };
@@ -302,6 +302,13 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         self.inner.champion_catalog()
     }
 
+    fn champion_details(
+        &self,
+        champion_id: i64,
+    ) -> Result<LeagueChampionDetails, LeagueClientReadError> {
+        self.inner.champion_details(champion_id)
+    }
+
     fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
         self.inner.accept_ready_check()
     }
@@ -340,6 +347,7 @@ pub struct SaveSettingsCommand {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsPayload {
     pub startup_page: String,
+    pub language: String,
     pub compact_mode: bool,
     pub activity_limit: i64,
     pub auto_accept_enabled: bool,
@@ -411,6 +419,12 @@ pub struct LeagueProfileIconCommand {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeagueChampionIconCommand {
+    pub champion_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueChampionDetailsCommand {
     pub champion_id: i64,
 }
 
@@ -507,6 +521,7 @@ pub fn save_settings(
         &state.store,
         SettingsInput {
             startup_page: command.settings.startup_page,
+            language: command.settings.language,
             compact_mode: command.settings.compact_mode,
             activity_limit: command.settings.activity_limit,
             auto_accept_enabled: command.settings.auto_accept_enabled,
@@ -683,6 +698,19 @@ pub fn get_league_champion_icon(
     .map_err(CommandError::from)
 }
 
+pub fn get_league_champion_details(
+    state: &AppState,
+    command: LeagueChampionDetailsCommand,
+) -> Result<LeagueChampionDetails, CommandError> {
+    application::get_league_champion_details(
+        &state.league_client,
+        LeagueChampionDetailsInput {
+            champion_id: command.champion_id,
+        },
+    )
+    .map_err(CommandError::from)
+}
+
 pub fn get_league_game_asset(
     state: &AppState,
     command: LeagueGameAssetCommand,
@@ -782,6 +810,7 @@ mod tests {
         let command: SaveSettingsCommand = serde_json::from_value(json!({
             "settings": {
                 "startupPage": "activity",
+                "language": "en",
                 "compactMode": true,
                 "activityLimit": 25,
                 "autoAcceptEnabled": false,
@@ -794,6 +823,7 @@ mod tests {
         .expect("frontend-shaped settings command deserializes");
 
         assert_eq!(command.settings.startup_page, "activity");
+        assert_eq!(command.settings.language, "en");
         assert!(command.settings.compact_mode);
         assert_eq!(command.settings.activity_limit, 25);
         assert!(!command.settings.auto_accept_enabled);
@@ -870,6 +900,7 @@ mod tests {
             SaveSettingsCommand {
                 settings: SettingsPayload {
                     startup_page: current_settings.startup_page.as_str().to_string(),
+                    language: current_settings.language.as_str().to_string(),
                     compact_mode: current_settings.compact_mode,
                     activity_limit: current_settings.activity_limit,
                     auto_accept_enabled: current_settings.auto_accept_enabled,
@@ -1028,6 +1059,16 @@ mod tests {
     }
 
     #[test]
+    fn league_champion_details_accepts_frontend_payload_shape() {
+        let command: LeagueChampionDetailsCommand = serde_json::from_value(json!({
+            "championId": 103
+        }))
+        .expect("frontend-shaped champion details command deserializes");
+
+        assert_eq!(command.champion_id, 103);
+    }
+
+    #[test]
     fn league_game_asset_accepts_frontend_payload_shape() {
         let command: LeagueGameAssetCommand = serde_json::from_value(json!({
             "kind": "item",
@@ -1176,6 +1217,43 @@ mod tests {
         assert!(value.get("url").is_none());
         assert!(value.get("authorization").is_none());
         assert!(value.get("password").is_none());
+    }
+
+    #[test]
+    fn league_champion_details_serializes_without_lcu_url_fields() {
+        let value = serde_json::to_value(LeagueChampionDetails {
+            champion_id: 103,
+            champion_name: "Ahri".to_string(),
+            title: Some("the Nine-Tailed Fox".to_string()),
+            square_portrait: Some(LeagueImageAsset {
+                mime_type: "image/png".to_string(),
+                bytes: vec![1, 0, 3],
+            }),
+            abilities: vec![domain::LeagueChampionAbility {
+                slot: "Q".to_string(),
+                name: "Orb of Deception".to_string(),
+                description: "Ahri sends out and pulls back her orb.".to_string(),
+                icon: Some(LeagueImageAsset {
+                    mime_type: "image/png".to_string(),
+                    bytes: vec![4, 5, 6],
+                }),
+                cooldown: Some("7".to_string()),
+                cost: Some("55".to_string()),
+                range: Some("880".to_string()),
+            }],
+        })
+        .expect("champion details serializes");
+        let serialized = value.to_string();
+
+        assert_eq!(value["championId"], 103);
+        assert_eq!(value["championName"], "Ahri");
+        assert_eq!(value["squarePortrait"]["mimeType"], "image/png");
+        assert_eq!(value["abilities"][0]["slot"], "Q");
+        assert_eq!(value["abilities"][0]["cooldown"], "7");
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("https://"));
+        assert!(!serialized.contains("/lol-game-data"));
     }
 
     #[test]

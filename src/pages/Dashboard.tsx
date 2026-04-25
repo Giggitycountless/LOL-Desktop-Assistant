@@ -1,8 +1,11 @@
 import { useAppState } from "../state/AppStateProvider";
 import type { LeagueClientStatus } from "../backend/types";
+import type { TranslationKey } from "../i18n";
+
+type T = (key: TranslationKey) => string;
 
 export function Dashboard() {
-  const { snapshot, isLoading, leagueSelfSnapshot, isLeagueClientLoading, refreshLeagueClient } = useAppState();
+  const { snapshot, isLoading, leagueSelfSnapshot, isLeagueClientLoading, refreshLeagueClient, t } = useAppState();
   const health = snapshot?.health;
   const recentActivity = snapshot?.recentActivity ?? [];
 
@@ -11,51 +14,52 @@ export function Dashboard() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-7">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Dashboard</p>
-            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">LoL Desktop Assistant</h1>
+            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">{t("dashboard.eyebrow")}</p>
+            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("app.name")}</h1>
           </div>
-          <HealthBadge status={health?.status ?? (isLoading ? "loading" : "degraded")} />
+          <HealthBadge status={health?.status ?? (isLoading ? "loading" : "degraded")} t={t} />
         </header>
 
         <section className="grid gap-4 md:grid-cols-3">
-          <StatusTile label="Application" value={health?.status ?? "loading"} tone={health?.status === "ok" ? "good" : "warn"} />
+          <StatusTile label={t("dashboard.application")} value={health?.status ?? t("common.loading")} tone={health?.status === "ok" ? "good" : "warn"} />
           <StatusTile
-            label="Database"
-            value={health?.databaseStatus ?? "pending"}
+            label={t("dashboard.database")}
+            value={health?.databaseStatus ?? t("common.pending")}
             tone={health?.databaseStatus === "ok" ? "good" : "warn"}
           />
           <StatusTile
-            label="Schema"
-            value={health ? String(health.schemaVersion ?? "none") : "pending"}
+            label={t("dashboard.schema")}
+            value={health ? String(health.schemaVersion ?? t("common.noData")) : t("common.pending")}
             tone={health?.schemaVersion ? "good" : "warn"}
           />
         </section>
 
         <LeagueOverview
+          averageKda={leagueSelfSnapshot?.recentPerformance.averageKda ?? null}
           isLoading={isLeagueClientLoading}
           onRefresh={() => refreshLeagueClient({ matchLimit: 6 })}
+          refreshedAt={leagueSelfSnapshot?.refreshedAt ?? null}
           status={leagueSelfSnapshot?.status}
           summonerName={leagueSelfSnapshot?.summoner?.displayName ?? null}
-          averageKda={leagueSelfSnapshot?.recentPerformance.averageKda ?? null}
-          refreshedAt={leagueSelfSnapshot?.refreshedAt ?? null}
+          t={t}
         />
 
         <section className="grid gap-4 lg:grid-cols-[1.25fr_0.75fr]">
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Current State</h2>
+            <h2 className="text-base font-semibold text-zinc-950">{t("dashboard.currentState")}</h2>
             <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <Metric label="Startup" value={snapshot?.settings.startupPage ?? "Loading"} />
-              <Metric label="Density" value={snapshot?.settings.compactMode ? "Compact" : "Standard"} />
-              <Metric label="Activity limit" value={snapshot ? String(snapshot.settings.activityLimit) : "Loading"} />
-              <Metric label="Activity entries" value={String(recentActivity.length)} />
+              <Metric label={t("dashboard.startup")} value={snapshot?.settings.startupPage ?? t("common.loading")} />
+              <Metric label={t("dashboard.density")} value={snapshot?.settings.compactMode ? t("dashboard.compact") : t("dashboard.standard")} />
+              <Metric label={t("dashboard.activityLimit")} value={snapshot ? String(snapshot.settings.activityLimit) : t("common.loading")} />
+              <Metric label={t("dashboard.activityEntries")} value={String(recentActivity.length)} />
             </div>
           </div>
 
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
-            <h2 className="text-base font-semibold text-zinc-950">Recent Activity</h2>
+            <h2 className="text-base font-semibold text-zinc-950">{t("dashboard.recentActivity")}</h2>
             <div className="mt-5 min-h-24 rounded-md border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">
-              {isLoading && "Loading activity"}
-              {!isLoading && recentActivity.length === 0 && "No activity recorded"}
+              {isLoading && t("dashboard.loadingActivity")}
+              {!isLoading && recentActivity.length === 0 && t("dashboard.noActivity")}
               {!isLoading && recentActivity.length > 0 && (
                 <div className="grid gap-3">
                   {recentActivity.slice(0, 3).map((entry) => (
@@ -81,6 +85,7 @@ function LeagueOverview({
   refreshedAt,
   status,
   summonerName,
+  t,
 }: {
   averageKda: number | null;
   isLoading: boolean;
@@ -88,16 +93,17 @@ function LeagueOverview({
   refreshedAt: string | null;
   status: LeagueClientStatus | undefined;
   summonerName: string | null;
+  t: T;
 }) {
   return (
     <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-zinc-950">League Client</h2>
-          <p className="mt-1 text-sm text-zinc-500">{leagueStatusMessage(status, isLoading)}</p>
+          <h2 className="text-base font-semibold text-zinc-950">{t("dashboard.leagueClient")}</h2>
+          <p className="mt-1 text-sm text-zinc-500">{leagueStatusMessage(status, isLoading, t)}</p>
         </div>
         <div className="flex items-center gap-2">
-          <LeagueStatusBadge isLoading={isLoading} status={status} />
+          <LeagueStatusBadge isLoading={isLoading} status={status} t={t} />
           <button
             className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isLoading}
@@ -105,24 +111,24 @@ function LeagueOverview({
             type="button"
           >
             <RefreshIcon />
-            Refresh
+            {t("common.refresh")}
           </button>
         </div>
       </div>
 
       <div className="mt-5 grid gap-3 md:grid-cols-3">
-        <Metric label="Summoner" value={summonerName ?? (isLoading ? "Loading" : "Unavailable")} />
-        <Metric label="Recent KDA" value={averageKda === null ? "Unavailable" : averageKda.toFixed(1)} />
-        <Metric label="Updated" value={formatTimestamp(refreshedAt)} />
+        <Metric label={t("dashboard.summoner")} value={summonerName ?? (isLoading ? t("common.loading") : t("common.unavailable"))} />
+        <Metric label={t("dashboard.recentKda")} value={averageKda === null ? t("common.unavailable") : averageKda.toFixed(1)} />
+        <Metric label={t("dashboard.updated")} value={formatTimestamp(refreshedAt, t)} />
       </div>
     </section>
   );
 }
 
-function LeagueStatusBadge({ status, isLoading }: { status: LeagueClientStatus | undefined; isLoading: boolean }) {
+function LeagueStatusBadge({ status, isLoading, t }: { status: LeagueClientStatus | undefined; isLoading: boolean; t: T }) {
   const isReady = status?.connection === "connected" && status.phase === "connected";
   const isPartial = status?.phase === "partialData";
-  const label = isLoading ? (status ? "Refreshing" : "Checking") : isReady ? "Connected" : formatLeaguePhase(status?.phase);
+  const label = isLoading ? (status ? t("common.refreshing") : t("common.loading")) : isReady ? t("common.connected") : formatLeaguePhase(status?.phase, t);
 
   return (
     <div
@@ -155,7 +161,7 @@ function RefreshIcon() {
   );
 }
 
-function HealthBadge({ status }: { status: "ok" | "degraded" | "loading" }) {
+function HealthBadge({ status, t }: { status: "ok" | "degraded" | "loading"; t: T }) {
   const isReady = status === "ok";
 
   return (
@@ -166,7 +172,7 @@ function HealthBadge({ status }: { status: "ok" | "degraded" | "loading" }) {
       ].join(" ")}
     >
       <span className={["h-2.5 w-2.5 rounded-full", isReady ? "bg-emerald-600" : "bg-amber-500"].join(" ")} />
-      {isReady ? "Ready" : "Pending"}
+      {isReady ? t("common.ready") : t("common.pending")}
     </div>
   );
 }
@@ -191,7 +197,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function formatLeaguePhase(phase: LeagueClientStatus["phase"] | undefined) {
+function formatLeaguePhase(phase: LeagueClientStatus["phase"] | undefined, t: T) {
   switch (phase) {
     case "notRunning":
       return "Not running";
@@ -206,23 +212,23 @@ function formatLeaguePhase(phase: LeagueClientStatus["phase"] | undefined) {
     case "partialData":
       return "Partial data";
     case "unavailable":
-      return "Unavailable";
+      return t("common.unavailable");
     case "connecting":
       return "Connecting";
     case "connected":
-      return "Connected";
+      return t("common.connected");
     default:
-      return "Pending";
+      return t("common.pending");
   }
 }
 
-function leagueStatusMessage(status: LeagueClientStatus | undefined, isLoading: boolean) {
+function leagueStatusMessage(status: LeagueClientStatus | undefined, isLoading: boolean, t: T) {
   if (isLoading && !status) {
-    return "Checking local read-only League Client connection";
+    return t("dashboard.checkingClient");
   }
 
   if (isLoading) {
-    return "Refreshing local read-only League Client data";
+    return t("dashboard.refreshingClient");
   }
 
   if (status?.message) {
@@ -230,15 +236,15 @@ function leagueStatusMessage(status: LeagueClientStatus | undefined, isLoading: 
   }
 
   if (status?.connection === "connected") {
-    return "Local read-only connection ready";
+    return t("dashboard.clientReady");
   }
 
-  return "League Client data is unavailable";
+  return t("dashboard.clientUnavailable");
 }
 
-function formatTimestamp(value: string | null | undefined) {
+function formatTimestamp(value: string | null | undefined, t: T) {
   if (!value) {
-    return "Pending";
+    return t("common.pending");
   }
 
   const numeric = Number(value);

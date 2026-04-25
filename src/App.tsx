@@ -10,18 +10,19 @@ import { SelfHistoryOverlay } from "./pages/SelfHistoryOverlay";
 import { Settings } from "./pages/Settings";
 import { AppStateProvider, useAppState } from "./state/AppStateProvider";
 import type { StartupPage } from "./backend/types";
+import { oppositeLanguage, type TranslationKey } from "./i18n";
 import { selectionFromParticipantProfileHash } from "./windows/participantProfileWindow";
 import { isSelfHistoryOverlayHash } from "./windows/selfHistoryOverlayWindow";
 
 type Page = StartupPage | "profile" | "matches" | "ranked";
 
-const pages: Array<{ id: Page; label: string; icon: IconName }> = [
-  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
-  { id: "profile", label: "Profile", icon: "profile" },
-  { id: "matches", label: "Matches", icon: "matches" },
-  { id: "ranked", label: "Ranked", icon: "ranked" },
-  { id: "activity", label: "Activity", icon: "activity" },
-  { id: "settings", label: "Settings", icon: "settings" },
+const pages: Array<{ id: Page; labelKey: TranslationKey; icon: IconName }> = [
+  { id: "dashboard", labelKey: "nav.dashboard", icon: "dashboard" },
+  { id: "profile", labelKey: "nav.profile", icon: "profile" },
+  { id: "matches", labelKey: "nav.matches", icon: "matches" },
+  { id: "ranked", labelKey: "nav.ranked", icon: "ranked" },
+  { id: "activity", labelKey: "nav.activity", icon: "activity" },
+  { id: "settings", labelKey: "nav.settings", icon: "settings" },
 ];
 
 export function App() {
@@ -42,7 +43,7 @@ export function App() {
 }
 
 function AppShell() {
-  const { snapshot, feedback, clearFeedback, isLoading } = useAppState();
+  const { snapshot, feedback, clearFeedback, isLoading, effectiveLanguage, setLanguagePreference, t } = useAppState();
   const [activePage, setActivePage] = useState<Page>("dashboard");
   const didApplyStartupPage = useRef(false);
   const compactMode = snapshot?.settings.compactMode ?? false;
@@ -68,8 +69,8 @@ function AppShell() {
           </div>
           {!compactMode && (
             <div className="ml-3 min-w-0">
-              <p className="truncate text-sm font-semibold text-zinc-950">LoL Desktop Assistant</p>
-              <p className="text-xs font-medium text-zinc-500">Milestone 5</p>
+              <p className="truncate text-sm font-semibold text-zinc-950">{t("app.name")}</p>
+              <p className="text-xs font-medium text-zinc-500">{t("app.milestone")}</p>
             </div>
           )}
         </div>
@@ -77,13 +78,14 @@ function AppShell() {
         <nav className="flex flex-1 flex-col gap-2 px-3 py-4" aria-label="Primary">
           {pages.map((page) => {
             const isActive = page.id === activePage;
+            const label = t(page.labelKey);
 
             return (
               <button
                 key={page.id}
                 type="button"
-                title={compactMode ? page.label : undefined}
-                aria-label={page.label}
+                title={compactMode ? label : undefined}
+                aria-label={label}
                 onClick={() => setActivePage(page.id)}
                 className={[
                   "flex h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm font-medium transition",
@@ -94,7 +96,7 @@ function AppShell() {
                 ].join(" ")}
               >
                 <Icon name={page.icon} />
-                {!compactMode && <span>{page.label}</span>}
+                {!compactMode && <span>{label}</span>}
               </button>
             );
           })}
@@ -102,6 +104,15 @@ function AppShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-12 shrink-0 items-center justify-end border-b border-zinc-200 bg-white px-8">
+          <button
+            type="button"
+            onClick={() => void setLanguagePreference(oppositeLanguage(effectiveLanguage))}
+            className="inline-flex h-8 min-w-12 items-center justify-center rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
+          >
+            {t("app.languageToggle")}
+          </button>
+        </div>
         {feedback && (
           <div
             className={[
@@ -113,13 +124,13 @@ function AppShell() {
           >
             <span>{feedback.message}</span>
             <button type="button" className="font-semibold underline-offset-4 hover:underline" onClick={clearFeedback}>
-              Dismiss
+              {t("app.dismiss")}
             </button>
           </div>
         )}
         {isLoading && !snapshot && (
           <div className="border-b border-zinc-200 bg-white px-8 py-3 text-sm font-medium text-zinc-600">
-            Loading application state
+            {t("app.loadingState")}
           </div>
         )}
         {activePage === "dashboard" && <Dashboard />}

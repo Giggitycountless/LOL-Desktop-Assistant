@@ -138,6 +138,14 @@ fn get_league_champion_icon(
 }
 
 #[tauri::command]
+fn get_league_champion_details(
+    state: State<'_, platform::AppState>,
+    input: platform::LeagueChampionDetailsCommand,
+) -> Result<domain::LeagueChampionDetails, platform::CommandError> {
+    platform::get_league_champion_details(state.inner(), input)
+}
+
+#[tauri::command]
 fn get_league_game_asset(
     state: State<'_, platform::AppState>,
     input: platform::LeagueGameAssetCommand,
@@ -236,6 +244,7 @@ fn main() {
             refresh_ranked_champion_stats,
             get_league_profile_icon,
             get_league_champion_icon,
+            get_league_champion_details,
             get_league_game_asset,
             get_post_match_detail,
             get_post_match_participant_profile,

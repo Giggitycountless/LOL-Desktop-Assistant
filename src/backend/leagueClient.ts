@@ -5,6 +5,7 @@ import type {
   ClearPlayerNoteResult,
   LeagueGameAsset,
   LeagueGameAssetKind,
+  LeagueChampionDetails,
   LeagueChampionSummary,
   LeagueClientStatus,
   LeagueImageAsset,
@@ -60,6 +61,12 @@ export function fetchLeagueProfileIcon(profileIconId: number): Promise<LeagueIma
 
 export function fetchLeagueChampionIcon(championId: number): Promise<LeagueImageAsset> {
   return callBackend<LeagueImageAsset>("get_league_champion_icon", {
+    input: { championId },
+  });
+}
+
+export function fetchLeagueChampionDetails(championId: number): Promise<LeagueChampionDetails> {
+  return callBackend<LeagueChampionDetails>("get_league_champion_details", {
     input: { championId },
   });
 }

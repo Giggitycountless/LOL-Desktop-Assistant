@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import { useAppState } from "../state/AppStateProvider";
 import type { RankedChampionDataStatus, RankedChampionLane, RankedChampionSort, RankedChampionStat } from "../backend/types";
+import type { TranslationKey } from "../i18n";
+
+type T = (key: TranslationKey) => string;
 
 const lanes: Array<{ id: RankedChampionLane; label: string; shortLabel: string }> = [
   { id: "top", label: "Top", shortLabel: "TOP" },
@@ -26,6 +29,7 @@ export function RankedChampions() {
     loadRankedChampionStats,
     rankedChampionStats,
     refreshRankedChampionStats,
+    t,
   } = useAppState();
   const [lane, setLane] = useState<RankedChampionLane>("top");
   const [sortBy, setSortBy] = useState<RankedChampionSort>("overall");
@@ -52,8 +56,8 @@ export function RankedChampions() {
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-7">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">Ranked Champions</p>
-            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">Ranked Champion Data</h1>
+            <p className="text-sm font-medium uppercase tracking-wide text-rose-700">{t("ranked.eyebrow")}</p>
+            <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("ranked.title")}</h1>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -63,10 +67,10 @@ export function RankedChampions() {
               type="button"
             >
               <RefreshIcon />
-              <span>{isRankedChampionStatsLoading ? "Refreshing" : "Refresh"}</span>
+              <span>{isRankedChampionStatsLoading ? t("common.refreshing") : t("common.refresh")}</span>
             </button>
             <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-600">
-              {isRankedChampionStatsLoading ? "Loading" : `${records.length} champions`}
+              {isRankedChampionStatsLoading ? t("common.loading") : `${records.length} ${t("ranked.champions")}`}
             </div>
           </div>
         </header>
@@ -114,18 +118,20 @@ export function RankedChampions() {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-base font-semibold text-zinc-950">{laneLabel(lane)} champions</h2>
+                <h2 className="text-base font-semibold text-zinc-950">
+                  {laneLabel(lane)} {t("ranked.champions")}
+                </h2>
                 <span className={["rounded px-2 py-0.5 text-xs font-bold", statusView.className].join(" ")}>
                   {statusView.label}
                 </span>
               </div>
               <p className="mt-1 text-sm text-zinc-500">
-                Sorted by {activeSort.label.toLowerCase()} · {rankedChampionStats?.source ?? "Local ranked data sample"}
+                {t("ranked.sortedBy")} {activeSort.label.toLowerCase()} / {rankedChampionStats?.source ?? t("ranked.localSample")}
               </p>
             </div>
             <div className="text-right">
-              <p className="text-sm font-semibold text-zinc-700">{metadata || "Sample data"}</p>
-              <p className="mt-1 text-xs font-medium text-zinc-500">{timeSummary(rankedChampionStats)}</p>
+              <p className="text-sm font-semibold text-zinc-700">{metadata || t("ranked.sampleData")}</p>
+              <p className="mt-1 text-xs font-medium text-zinc-500">{timeSummary(rankedChampionStats, t)}</p>
             </div>
           </div>
 
@@ -137,18 +143,18 @@ export function RankedChampions() {
 
           <div className="overflow-x-auto">
             <div className="grid min-w-[64rem] grid-cols-[4rem_minmax(14rem,1.3fr)_7rem_8rem_8rem_8rem_11rem] gap-3 border-b border-zinc-200 bg-zinc-100 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-              <span>Rank</span>
-              <span>Champion</span>
-              <span>Overall</span>
-              <span>Win</span>
-              <span>Pick</span>
-              <span>Ban</span>
-              <span>Sample</span>
+              <span>{t("ranked.rank")}</span>
+              <span>{t("ranked.champion")}</span>
+              <span>{t("ranked.overall")}</span>
+              <span>{t("common.win")}</span>
+              <span>{t("ranked.pick")}</span>
+              <span>{t("ranked.ban")}</span>
+              <span>{t("ranked.sample")}</span>
             </div>
 
             {records.length === 0 && (
               <div className="px-5 py-8 text-sm text-zinc-500">
-                No ranked champion data is available for this lane.
+                {t("ranked.noLaneData")}
               </div>
             )}
 
@@ -159,6 +165,7 @@ export function RankedChampions() {
                 key={`${record.lane}-${record.championId}`}
                 rank={index + 1}
                 record={record}
+                t={t}
               />
             ))}
           </div>
@@ -173,11 +180,13 @@ function ChampionRow({
   imageUrl,
   rank,
   record,
+  t,
 }: {
   highlightMetric: keyof RankedChampionStat;
   imageUrl: string | undefined;
   rank: number;
   record: RankedChampionStat;
+  t: T;
 }) {
   return (
     <div className="grid min-w-[64rem] grid-cols-[4rem_minmax(14rem,1.3fr)_7rem_8rem_8rem_8rem_11rem] items-center gap-3 border-b border-zinc-100 px-5 py-3 last:border-b-0">
@@ -194,9 +203,9 @@ function ChampionRow({
       <Metric value={record.pickRate} suffix="%" isActive={highlightMetric === "pickRate"} />
       <Metric value={record.banRate} suffix="%" isActive={highlightMetric === "banRate"} />
       <div className="text-sm font-semibold text-zinc-700">
-        <p>{formatGames(record.games)} games</p>
+        <p>{formatGames(record.games)} {t("participant.recentMatches")}</p>
         <p className="mt-1 text-xs font-medium text-zinc-500">
-          {formatGames(record.wins)}W · {formatGames(record.picks)}P · {formatGames(record.bans)}B
+          {formatGames(record.wins)}W / {formatGames(record.picks)}P / {formatGames(record.bans)}B
         </p>
       </div>
     </div>
@@ -306,9 +315,10 @@ function timeSummary(
         updatedAt: string;
       }
     | null,
+  t: T,
 ) {
   if (!stats) {
-    return "pending";
+    return t("common.pending");
   }
 
   const parts = [];

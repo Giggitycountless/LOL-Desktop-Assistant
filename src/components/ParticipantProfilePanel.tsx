@@ -3,7 +3,10 @@ import { useEffect, useState } from "react";
 import { PostMatchAnalysis } from "./PostMatchAnalysis";
 import { useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type { MatchResult, PostMatchDetail, RecentMatchSummary } from "../backend/types";
+import type { TranslationKey } from "../i18n";
 import { emitParticipantProfileChanged, openParticipantProfileWindow } from "../windows/participantProfileWindow";
+
+type T = (key: TranslationKey) => string;
 
 export type SelectedParticipant = {
   gameId: number;
@@ -27,6 +30,7 @@ export function ParticipantProfilePanel({
     participantProfiles,
     savePlayerNote,
     clearPlayerNote,
+    t,
   } = useAppState();
   const profile = selection ? participantProfiles[participantProfileKey(selection.gameId, selection.participantId)] : undefined;
   const [noteDraft, setNoteDraft] = useState("");
@@ -64,8 +68,8 @@ export function ParticipantProfilePanel({
   if (!selection) {
     return (
       <aside className={containerClass}>
-        <h2 className="text-base font-semibold text-zinc-950">Participant Profile</h2>
-        <p className="mt-2 text-sm text-zinc-500">Select a completed-match participant to view public profile details and local notes.</p>
+        <h2 className="text-base font-semibold text-zinc-950">{t("participant.profile")}</h2>
+        <p className="mt-2 text-sm text-zinc-500">{t("participant.empty")}</p>
       </aside>
     );
   }
@@ -73,8 +77,8 @@ export function ParticipantProfilePanel({
   if (!profile) {
     return (
       <aside className={containerClass}>
-        <h2 className="text-base font-semibold text-zinc-950">Loading profile</h2>
-        <p className="mt-2 text-sm text-zinc-500">Reading completed-match-visible participant data.</p>
+        <h2 className="text-base font-semibold text-zinc-950">{t("participant.loading")}</h2>
+        <p className="mt-2 text-sm text-zinc-500">{t("participant.reading")}</p>
       </aside>
     );
   }
@@ -109,14 +113,14 @@ export function ParticipantProfilePanel({
         <ProfileImage displayName={activeProfile.displayName} imageUrl={profileImageUrl} />
         <div className="min-w-0">
           <h2 className="truncate text-base font-semibold text-zinc-950">{activeProfile.displayName}</h2>
-          <p className="mt-1 text-xs text-zinc-500">Completed match participant</p>
+          <p className="mt-1 text-xs text-zinc-500">{t("participant.completed")}</p>
         </div>
       </div>
 
       <div className="mt-5 grid gap-3">
-        <Detail label="Recent KDA" value={formatAverageKda(activeProfile.recentStats?.averageKda)} />
-        <Detail label="Recent matches" value={activeProfile.recentStats ? String(activeProfile.recentStats.matchCount) : "Unavailable"} />
-        <Detail label="Recent champions" value={activeProfile.recentStats?.recentChampions.join(", ") || "Unavailable"} />
+        <Detail label={t("dashboard.recentKda")} value={formatAverageKda(activeProfile.recentStats?.averageKda, t)} />
+        <Detail label={t("participant.recentMatches")} value={activeProfile.recentStats ? String(activeProfile.recentStats.matchCount) : t("common.unavailable")} />
+        <Detail label={t("participant.recentChampions")} value={activeProfile.recentStats?.recentChampions.join(", ") || t("common.unavailable")} />
       </div>
 
       <RecentMatchesList matches={activeProfile.recentStats?.recentMatches ?? []} />
@@ -131,7 +135,7 @@ export function ParticipantProfilePanel({
 
       <div className="mt-5 grid gap-3">
         <label className="grid gap-1 text-sm font-medium text-zinc-700">
-          Note
+          {t("participant.note")}
           <textarea
             className="min-h-28 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-950 outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
             maxLength={1000}
@@ -140,7 +144,7 @@ export function ParticipantProfilePanel({
           />
         </label>
         <label className="grid gap-1 text-sm font-medium text-zinc-700">
-          Tags
+          {t("participant.tags")}
           <input
             className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
             onChange={(event) => setTagsDraft(event.target.value)}
@@ -154,14 +158,14 @@ export function ParticipantProfilePanel({
             onClick={() => void handleSaveNote()}
             type="button"
           >
-            Save note
+            {t("participant.saveNote")}
           </button>
           <button
             className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-50"
             onClick={() => void handleClearNote()}
             type="button"
           >
-            Clear
+            {t("common.clear")}
           </button>
         </div>
       </div>
@@ -176,6 +180,7 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
     loadLeagueGameAsset,
     loadPostMatchDetail,
     postMatchDetails,
+    t,
   } = useAppState();
   const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
   const expandedDetail = expandedGameId ? postMatchDetails[expandedGameId] : undefined;
@@ -217,12 +222,12 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
   return (
     <section className="mt-5">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-zinc-950">Recent 6 matches</h3>
-        <span className="text-xs font-medium text-zinc-500">{matches.length} loaded</span>
+        <h3 className="text-sm font-semibold text-zinc-950">{t("participant.recentSix")}</h3>
+        <span className="text-xs font-medium text-zinc-500">{matches.length} {t("participant.loaded")}</span>
       </div>
       <div className="mt-3 grid gap-2">
         {matches.length === 0 && (
-          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-500">Recent public match data is unavailable.</div>
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-500">{t("participant.publicUnavailable")}</div>
         )}
         {matches.map((match) => (
           <RecentMatchRow
@@ -234,6 +239,7 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
             onParticipantSelect={(participantId) => selectParticipant(match.gameId, participantId)}
             onToggle={() => toggleMatch(match.gameId)}
             participantImages={leagueImages.championIcons}
+            t={t}
           />
         ))}
       </div>
@@ -249,6 +255,7 @@ function RecentMatchRow({
   onParticipantSelect,
   onToggle,
   participantImages,
+  t,
 }: {
   detail: PostMatchDetail | undefined;
   gameAssets: Record<string, LeagueGameAssetView>;
@@ -257,6 +264,7 @@ function RecentMatchRow({
   onParticipantSelect: (participantId: number) => void;
   onToggle: () => void;
   participantImages: Record<number, string>;
+  t: T;
 }) {
   const { leagueImages } = useAppState();
   const imageUrl = match.championId ? leagueImages.championIcons[match.championId] : undefined;
@@ -275,9 +283,9 @@ function RecentMatchRow({
             <ResultBadge result={match.result} />
           </div>
           <p className="mt-1 truncate text-xs text-zinc-500">
-            {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt)}
+            {match.queueName ?? t("common.unknown")} - {formatTimestamp(match.playedAt, t)}
           </p>
-          <p className="mt-1 text-xs text-zinc-500">{formatDuration(match.gameDurationSeconds)}</p>
+          <p className="mt-1 text-xs text-zinc-500">{formatDuration(match.gameDurationSeconds, t)}</p>
         </div>
         <div className="text-right">
           <p className="text-sm font-semibold text-zinc-950">
@@ -291,12 +299,12 @@ function RecentMatchRow({
       {isExpanded && (
         <div className="grid gap-4 border-t border-zinc-200 bg-white p-3">
           <div className="grid gap-2">
-            <Detail label="Result" value={formatResult(match.result)} />
-            <Detail label="Duration" value={formatDuration(match.gameDurationSeconds)} />
-            <Detail label="Played" value={formatTimestamp(match.playedAt)} />
-            <Detail label="Match ID" value={String(match.gameId)} />
+            <Detail label={t("matches.result")} value={formatResult(match.result, t)} />
+            <Detail label={t("matches.duration")} value={formatDuration(match.gameDurationSeconds, t)} />
+            <Detail label={t("matches.played")} value={formatTimestamp(match.playedAt, t)} />
+            <Detail label={t("matches.matchId")} value={String(match.gameId)} />
           </div>
-          {!detail && <StatePanel title="Loading analysis" body="Reading completed match details from local history" />}
+          {!detail && <StatePanel title={t("matches.loadingAnalysis")} body={t("matches.readingAnalysis")} />}
           {detail && (
             <PostMatchAnalysis
               detail={detail}
@@ -345,6 +353,7 @@ function Detail({ label, value }: { label: string; value: string }) {
 }
 
 function ResultBadge({ result }: { result: MatchResult }) {
+  const { t } = useAppState();
   const tone =
     result === "win"
       ? "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -352,7 +361,7 @@ function ResultBadge({ result }: { result: MatchResult }) {
         ? "border-rose-200 bg-rose-50 text-rose-800"
         : "border-zinc-200 bg-white text-zinc-600";
 
-  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result)}</span>;
+  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result, t)}</span>;
 }
 
 function StatePanel({ title, body }: { title: string; body: string }) {
@@ -378,24 +387,24 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
   );
 }
 
-function formatAverageKda(value: number | null | undefined) {
-  return value === null || value === undefined ? "Unavailable" : value.toFixed(1);
+function formatAverageKda(value: number | null | undefined, t: T) {
+  return value === null || value === undefined ? t("common.unavailable") : value.toFixed(1);
 }
 
-function formatResult(result: MatchResult) {
+function formatResult(result: MatchResult, t: T) {
   switch (result) {
     case "win":
-      return "Win";
+      return t("common.win");
     case "loss":
-      return "Loss";
+      return t("common.loss");
     default:
-      return "Unknown";
+      return t("common.unknown");
   }
 }
 
-function formatTimestamp(value: string | null | undefined) {
+function formatTimestamp(value: string | null | undefined, t: T) {
   if (!value) {
-    return "Pending";
+    return t("common.pending");
   }
 
   const numeric = Number(value);
@@ -408,9 +417,9 @@ function formatTimestamp(value: string | null | undefined) {
   return date.toLocaleString();
 }
 
-function formatDuration(value: number | null) {
+function formatDuration(value: number | null, t: T) {
   if (!value || value < 0) {
-    return "Unavailable";
+    return t("common.unavailable");
   }
 
   const minutes = Math.floor(value / 60);

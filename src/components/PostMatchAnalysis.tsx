@@ -1,4 +1,4 @@
-import { leagueGameAssetKey, type LeagueGameAssetView } from "../state/AppStateProvider";
+import { leagueGameAssetKey, useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type {
   LeagueGameAssetKind,
   MatchResult,
@@ -7,6 +7,9 @@ import type {
   PostMatchParticipant,
   PostMatchTeam,
 } from "../backend/types";
+import type { TranslationKey } from "../i18n";
+
+type T = (key: TranslationKey) => string;
 
 export function PostMatchAnalysis({
   detail,
@@ -19,6 +22,7 @@ export function PostMatchAnalysis({
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
 }) {
+  const { t } = useAppState();
   const maxDamage = Math.max(
     1,
     ...detail.teams.flatMap((team) => team.participants.map((participant) => participant.damageToChampions)),
@@ -36,6 +40,7 @@ export function PostMatchAnalysis({
             onParticipantSelect={onParticipantSelect}
             participantImages={participantImages}
             team={team}
+            t={t}
           />
         ))}
       </div>
@@ -56,35 +61,37 @@ function TeamBlock({
   onParticipantSelect,
   participantImages,
   team,
+  t,
 }: {
   gameAssets: Record<string, LeagueGameAssetView>;
   maxDamage: number;
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
   team: PostMatchTeam;
+  t: T;
 }) {
   return (
     <div className="overflow-visible rounded-md border border-zinc-200 bg-white">
       <div className="flex items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2">
         <div>
-          <p className="text-sm font-semibold text-zinc-950">Team {team.teamId}</p>
+          <p className="text-sm font-semibold text-zinc-950">{t("analysis.team")} {team.teamId}</p>
           <p className="mt-1 text-xs text-zinc-500">
-            {team.totals.kills}/{team.totals.deaths}/{team.totals.assists} - {formatCompact(team.totals.goldEarned)} gold
+            {team.totals.kills}/{team.totals.deaths}/{team.totals.assists} - {formatCompact(team.totals.goldEarned)} {t("analysis.gold")}
           </p>
         </div>
-        <ResultBadge result={team.result} />
+        <ResultBadge result={team.result} t={t} />
       </div>
 
       <div className="overflow-x-auto pb-2">
         <div className="grid min-w-[58rem] grid-cols-[minmax(15rem,1.6fr)_4.25rem_5.5rem_minmax(8rem,0.8fr)_4rem_4rem_4.5rem_minmax(14rem,1.2fr)] gap-3 border-b border-zinc-200 bg-zinc-100 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-          <span>Player</span>
-          <span>Score</span>
+          <span>{t("analysis.player")}</span>
+          <span>{t("analysis.score")}</span>
           <span>KDA</span>
-          <span>Damage</span>
+          <span>{t("analysis.damage")}</span>
           <span>VS</span>
           <span>CS</span>
-          <span>Gold</span>
-          <span>Build</span>
+          <span>{t("analysis.gold")}</span>
+          <span>{t("analysis.build")}</span>
         </div>
 
         <div>
@@ -96,6 +103,7 @@ function TeamBlock({
               maxDamage={maxDamage}
               onSelect={() => onParticipantSelect(participant.participantId)}
               participant={participant}
+              t={t}
             />
           ))}
         </div>
@@ -110,12 +118,14 @@ function ParticipantRow({
   maxDamage,
   onSelect,
   participant,
+  t,
 }: {
   gameAssets: Record<string, LeagueGameAssetView>;
   imageUrl: string | undefined;
   maxDamage: number;
   onSelect: () => void;
   participant: PostMatchParticipant;
+  t: T;
 }) {
   return (
     <button
@@ -145,7 +155,7 @@ function ParticipantRow({
       <span className="text-sm font-semibold text-zinc-700">{participant.visionScore}</span>
       <span className="text-sm font-semibold text-zinc-700">{participant.cs}</span>
       <span className="text-sm font-semibold text-zinc-700">{formatCompact(participant.goldEarned)}</span>
-      <BuildCell assets={gameAssets} participant={participant} />
+      <BuildCell assets={gameAssets} participant={participant} t={t} />
     </button>
   );
 }
@@ -193,16 +203,18 @@ function DamageCell({ damage, maxDamage }: { damage: number; maxDamage: number }
 function BuildCell({
   assets,
   participant,
+  t,
 }: {
   assets: Record<string, LeagueGameAssetView>;
   participant: PostMatchParticipant;
+  t: T;
 }) {
   return (
     <div className="grid gap-1">
-      <AssetStrip assetIds={participant.items} assets={assets} iconSize="md" kind="item" />
+      <AssetStrip assetIds={participant.items} assets={assets} iconSize="md" kind="item" t={t} />
       <div className="flex flex-wrap gap-1">
-        <AssetStrip assetIds={participant.runes} assets={assets} iconSize="sm" kind="rune" />
-        <AssetStrip assetIds={participant.spells} assets={assets} iconSize="sm" kind="spell" />
+        <AssetStrip assetIds={participant.runes} assets={assets} iconSize="sm" kind="rune" t={t} />
+        <AssetStrip assetIds={participant.spells} assets={assets} iconSize="sm" kind="spell" t={t} />
       </div>
     </div>
   );
@@ -213,15 +225,17 @@ function AssetStrip({
   assets,
   iconSize,
   kind,
+  t,
 }: {
   assetIds: number[];
   assets: Record<string, LeagueGameAssetView>;
   iconSize: "sm" | "md";
   kind: LeagueGameAssetKind;
+  t: T;
 }) {
   return (
     <div className="flex min-w-0 flex-wrap gap-1">
-      {assetIds.length === 0 && kind === "item" && <span className="text-xs text-zinc-400">No items</span>}
+      {assetIds.length === 0 && kind === "item" && <span className="text-xs text-zinc-400">{t("analysis.noItems")}</span>}
       {assetIds.map((assetId, index) => (
         <AssetIcon
           asset={assets[leagueGameAssetKey(kind, assetId)]}
@@ -229,6 +243,7 @@ function AssetStrip({
           iconSize={iconSize}
           key={`${kind}-${assetId}-${index}`}
           kind={kind}
+          t={t}
         />
       ))}
     </div>
@@ -240,13 +255,15 @@ function AssetIcon({
   assetId,
   iconSize,
   kind,
+  t,
 }: {
   asset: LeagueGameAssetView | undefined;
   assetId: number;
   iconSize: "sm" | "md";
   kind: LeagueGameAssetKind;
+  t: T;
 }) {
-  const label = asset?.name ?? `${assetLabel(kind)} ${assetId}`;
+  const label = asset?.name ?? `${assetLabel(kind, t)} ${assetId}`;
   const title = asset?.description ? `${label}\n${asset.description}` : label;
   const sizeClass = iconSize === "md" ? "h-7 w-7" : "h-5 w-5";
 
@@ -262,7 +279,7 @@ function AssetIcon({
       )}
       <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 hidden w-72 -translate-x-1/2 rounded-md border border-zinc-800 bg-zinc-950 p-3 text-left text-xs text-white shadow-xl group-hover:block">
         <span className="block text-sm font-semibold">{label}</span>
-        <span className="mt-1 block text-zinc-300">{asset?.description ?? `${assetLabel(kind)} details are loading from local game data.`}</span>
+        <span className="mt-1 block text-zinc-300">{asset?.description ?? `${assetLabel(kind, t)} ${t("analysis.detailsLoading")}`}</span>
       </span>
     </span>
   );
@@ -302,7 +319,7 @@ function ChampionImage({ championName, imageUrl }: { championName: string; image
   );
 }
 
-function ResultBadge({ result }: { result: MatchResult }) {
+function ResultBadge({ result, t }: { result: MatchResult; t: T }) {
   const tone =
     result === "win"
       ? "border-emerald-200 bg-emerald-50 text-emerald-800"
@@ -310,17 +327,17 @@ function ResultBadge({ result }: { result: MatchResult }) {
         ? "border-rose-200 bg-rose-50 text-rose-800"
         : "border-zinc-200 bg-white text-zinc-600";
 
-  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result)}</span>;
+  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result, t)}</span>;
 }
 
-function formatResult(result: MatchResult) {
+function formatResult(result: MatchResult, t: T) {
   switch (result) {
     case "win":
-      return "Win";
+      return t("common.win");
     case "loss":
-      return "Loss";
+      return t("common.loss");
     default:
-      return "Unknown";
+      return t("common.unknown");
   }
 }
 
@@ -336,14 +353,14 @@ function formatLeaderValue(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-function assetLabel(kind: LeagueGameAssetKind) {
+function assetLabel(kind: LeagueGameAssetKind, t: T) {
   switch (kind) {
     case "item":
-      return "Item";
+      return t("analysis.item");
     case "rune":
-      return "Rune";
+      return t("analysis.rune");
     case "spell":
-      return "Spell";
+      return t("analysis.spell");
   }
 }
 
