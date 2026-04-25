@@ -20,6 +20,7 @@ export type RankedChampionSort = "overall" | "winRate" | "banRate" | "pickRate";
 export type RankedChampionDataStatus = "sample" | "cached" | "fresh" | "staleCache";
 export type MatchResult = "win" | "loss" | "unknown";
 export type KdaTag = "high" | "standard" | "unavailable";
+export type ChampSelectTeam = "ally" | "enemy";
 
 export type HealthcheckResult = {
   status: ServiceStatus;
@@ -31,6 +32,11 @@ export type AppSettings = {
   startupPage: StartupPage;
   compactMode: boolean;
   activityLimit: number;
+  autoAcceptEnabled: boolean;
+  autoPickEnabled: boolean;
+  autoPickChampionId: number | null;
+  autoBanEnabled: boolean;
+  autoBanChampionId: number | null;
   updatedAt: string;
 };
 
@@ -38,6 +44,11 @@ export type SaveSettingsInput = {
   startupPage: StartupPage;
   compactMode: boolean;
   activityLimit: number;
+  autoAcceptEnabled: boolean;
+  autoPickEnabled: boolean;
+  autoPickChampionId: number | null;
+  autoBanEnabled: boolean;
+  autoBanChampionId: number | null;
 };
 
 export type ActivityEntry = {
@@ -186,6 +197,11 @@ export type LeagueSelfSnapshotInput = {
   matchLimit?: number;
 };
 
+export type LeagueChampionSummary = {
+  championId: number;
+  championName: string;
+};
+
 export type LeagueImageAsset = {
   mimeType: string;
   bytes: number[];
@@ -299,6 +315,22 @@ export type ParticipantPublicProfile = {
   recentStats: ParticipantRecentStats | null;
   note: PlayerNoteView | null;
   warnings: LeagueDataWarning[];
+};
+
+export type ChampSelectPlayer = {
+  summonerId: number;
+  puuid: string;
+  displayName: string;
+  championId: number | null;
+  championName: string | null;
+  team: ChampSelectTeam;
+  rankedQueues: RankedQueueSummary[];
+  recentStats: ParticipantRecentStats | null;
+};
+
+export type ChampSelectSnapshot = {
+  players: ChampSelectPlayer[];
+  cachedAt: string;
 };
 
 export type ParticipantPublicProfileInput = {

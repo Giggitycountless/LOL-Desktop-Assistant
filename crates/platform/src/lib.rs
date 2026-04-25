@@ -1,30 +1,64 @@
-use std::{error::Error, path::Path};
+use std::{
+    collections::HashMap,
+    error::Error,
+    path::Path,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use adapters::{LocalLeagueClient, RemoteRankedChampionJsonProvider};
 use application::{
     ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionIconInput,
-    LeagueGameAssetInput, LeagueProfileIconInput, LeagueSelfSnapshotInput,
-    ParticipantPublicProfileInput, PostMatchDetailInput, RankedChampionRefreshInput,
-    RankedChampionStatsInput, SettingsInput,
+    LeagueClientReadError, LeagueClientReader, LeagueGameAssetInput, LeagueProfileIconInput,
+    LeagueSelfSnapshotInput, ParticipantPublicProfileInput, PostMatchDetailInput,
+    RankedChampionRefreshInput, RankedChampionStatsInput, SettingsInput,
 };
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
-    ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, LeagueClientStatus,
-    LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfSnapshot, LocalDataExport,
-    ParticipantPublicProfile, PlayerNoteView, PostMatchDetail, RankedChampionLane,
-    RankedChampionSort, RankedChampionStatsResponse, SettingsValues,
+    ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult,
+    LeagueChampionSummary, LeagueClientStatus, LeagueGameAsset, LeagueGameAssetKind,
+    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalDataExport,
+    ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteView, PostMatchDetail,
+    RankedChampionLane, RankedChampionSort, RankedChampionStatsResponse, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
 use tauri::{Manager, Runtime};
 
 const DEFAULT_RANKED_CHAMPION_DATA_URL: &str = "https://raw.githubusercontent.com/Giggitycountless/LOL-Desktop-Assistant/main/data/ranked-champions/latest.json";
+const CHAMP_SELECT_CACHE_TTL: Duration = Duration::from_secs(8);
+const RECENT_STATS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const RECENT_STATS_FAILURE_CACHE_TTL: Duration = Duration::from_secs(30);
+const SUMMONER_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const SUMMONER_FAILURE_CACHE_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
+pub struct ChampSelectCacheEntry {
+    snapshot: domain::ChampSelectSnapshot,
+    cached_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentStatsCacheEntry {
+    result: Result<ParticipantRecentStats, LeagueClientReadError>,
+    cached_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+pub struct SummonerCacheEntry {
+    entry: Option<application::SummonerBatchEntry>,
+    cached_at: Instant,
+}
+
+#[derive(Debug)]
 pub struct AppState {
     store: SqliteStore,
     league_client: LocalLeagueClient,
     ranked_champion_provider: RemoteRankedChampionJsonProvider,
+    pub champ_select_cache: Mutex<Option<ChampSelectCacheEntry>>,
+    pub recent_stats_cache: Mutex<HashMap<String, RecentStatsCacheEntry>>,
+    pub summoner_id_cache: Mutex<HashMap<i64, SummonerCacheEntry>>,
+    pub summoner_name_cache: Mutex<HashMap<String, SummonerCacheEntry>>,
 }
 
 impl AppState {
@@ -35,8 +69,265 @@ impl AppState {
             ranked_champion_provider: RemoteRankedChampionJsonProvider::new(
                 DEFAULT_RANKED_CHAMPION_DATA_URL,
             ),
+            champ_select_cache: Mutex::new(None),
+            recent_stats_cache: Mutex::new(HashMap::new()),
+            summoner_id_cache: Mutex::new(HashMap::new()),
+            summoner_name_cache: Mutex::new(HashMap::new()),
         })
     }
+}
+
+impl Clone for AppState {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            league_client: self.league_client.clone(),
+            ranked_champion_provider: self.ranked_champion_provider.clone(),
+            champ_select_cache: Mutex::new(self.champ_select_cache.lock().unwrap().clone()),
+            recent_stats_cache: Mutex::new(self.recent_stats_cache.lock().unwrap().clone()),
+            summoner_id_cache: Mutex::new(self.summoner_id_cache.lock().unwrap().clone()),
+            summoner_name_cache: Mutex::new(self.summoner_name_cache.lock().unwrap().clone()),
+        }
+    }
+}
+
+struct CachedLeagueClientReader<'a> {
+    inner: &'a LocalLeagueClient,
+    recent_stats_cache: &'a Mutex<HashMap<String, RecentStatsCacheEntry>>,
+    summoner_id_cache: &'a Mutex<HashMap<i64, SummonerCacheEntry>>,
+    summoner_name_cache: &'a Mutex<HashMap<String, SummonerCacheEntry>>,
+}
+
+impl LeagueClientReader for CachedLeagueClientReader<'_> {
+    fn status(&self) -> Result<LeagueClientStatus, LeagueClientReadError> {
+        self.inner.status()
+    }
+
+    fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError> {
+        self.inner.self_data(match_limit)
+    }
+
+    fn profile_icon(
+        &self,
+        profile_icon_id: i64,
+    ) -> Result<LeagueImageAsset, LeagueClientReadError> {
+        self.inner.profile_icon(profile_icon_id)
+    }
+
+    fn champion_icon(&self, champion_id: i64) -> Result<LeagueImageAsset, LeagueClientReadError> {
+        self.inner.champion_icon(champion_id)
+    }
+
+    fn game_asset(
+        &self,
+        kind: LeagueGameAssetKind,
+        asset_id: i64,
+    ) -> Result<LeagueGameAsset, LeagueClientReadError> {
+        self.inner.game_asset(kind, asset_id)
+    }
+
+    fn completed_match(
+        &self,
+        game_id: i64,
+    ) -> Result<application::LeagueCompletedMatch, LeagueClientReadError> {
+        self.inner.completed_match(game_id)
+    }
+
+    fn participant_recent_stats(
+        &self,
+        player_puuid: &str,
+        limit: i64,
+    ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+        let cache_key = format!("{player_puuid}:{limit}");
+        if let Some(result) = self
+            .recent_stats_cache
+            .lock()
+            .unwrap()
+            .get(cache_key.as_str())
+            .filter(|entry| {
+                let ttl = if entry.result.is_ok() {
+                    RECENT_STATS_CACHE_TTL
+                } else {
+                    RECENT_STATS_FAILURE_CACHE_TTL
+                };
+                entry.cached_at.elapsed() < ttl
+            })
+            .map(|entry| entry.result.clone())
+        {
+            return result;
+        }
+
+        let result = self.inner.participant_recent_stats(player_puuid, limit);
+        self.recent_stats_cache.lock().unwrap().insert(
+            cache_key,
+            RecentStatsCacheEntry {
+                result: result.clone(),
+                cached_at: Instant::now(),
+            },
+        );
+
+        result
+    }
+
+    fn champ_select_session(
+        &self,
+    ) -> Result<application::ChampSelectSessionData, LeagueClientReadError> {
+        self.inner.champ_select_session()
+    }
+
+    fn summoners_by_ids(&self, ids: &[i64]) -> Vec<application::SummonerBatchEntry> {
+        let mut entries = Vec::new();
+        let mut missing_ids = Vec::new();
+
+        {
+            let cache = self.summoner_id_cache.lock().unwrap();
+            for id in ids {
+                match cache.get(id).filter(|entry| summoner_cache_is_fresh(entry)) {
+                    Some(entry) => {
+                        if let Some(summoner) = &entry.entry {
+                            entries.push(summoner.clone());
+                        }
+                    }
+                    None => missing_ids.push(*id),
+                }
+            }
+        }
+
+        if missing_ids.is_empty() {
+            return entries;
+        }
+
+        let fetched = self.inner.summoners_by_ids(&missing_ids);
+        let fetched_by_id: HashMap<i64, application::SummonerBatchEntry> = fetched
+            .iter()
+            .cloned()
+            .map(|entry| (entry.summoner_id, entry))
+            .collect();
+
+        {
+            let mut cache = self.summoner_id_cache.lock().unwrap();
+            let mut name_cache = self.summoner_name_cache.lock().unwrap();
+            for id in missing_ids {
+                let entry = fetched_by_id.get(&id).cloned();
+                if let Some(summoner) = &entry {
+                    name_cache.insert(
+                        normalize_player_name(summoner.display_name.as_str()),
+                        SummonerCacheEntry {
+                            entry: Some(summoner.clone()),
+                            cached_at: Instant::now(),
+                        },
+                    );
+                    entries.push(summoner.clone());
+                }
+                cache.insert(
+                    id,
+                    SummonerCacheEntry {
+                        entry,
+                        cached_at: Instant::now(),
+                    },
+                );
+            }
+        }
+
+        entries
+    }
+
+    fn summoners_by_names(&self, names: &[String]) -> Vec<application::SummonerBatchEntry> {
+        let mut entries = Vec::new();
+        let mut missing_names = Vec::new();
+
+        {
+            let cache = self.summoner_name_cache.lock().unwrap();
+            for name in names {
+                let normalized_name = normalize_player_name(name.as_str());
+                if normalized_name.is_empty() {
+                    continue;
+                }
+
+                match cache
+                    .get(normalized_name.as_str())
+                    .filter(|entry| summoner_cache_is_fresh(entry))
+                {
+                    Some(entry) => {
+                        if let Some(summoner) = &entry.entry {
+                            entries.push(summoner.clone());
+                        }
+                    }
+                    None => missing_names.push(name.clone()),
+                }
+            }
+        }
+
+        if missing_names.is_empty() {
+            return entries;
+        }
+
+        let fetched = self.inner.summoners_by_names(&missing_names);
+        let fetched_by_name: HashMap<String, application::SummonerBatchEntry> = fetched
+            .iter()
+            .cloned()
+            .map(|entry| (normalize_player_name(entry.display_name.as_str()), entry))
+            .collect();
+
+        {
+            let mut name_cache = self.summoner_name_cache.lock().unwrap();
+            let mut id_cache = self.summoner_id_cache.lock().unwrap();
+            for name in missing_names {
+                let normalized_name = normalize_player_name(name.as_str());
+                let entry = fetched_by_name.get(normalized_name.as_str()).cloned();
+                if let Some(summoner) = &entry {
+                    id_cache.insert(
+                        summoner.summoner_id,
+                        SummonerCacheEntry {
+                            entry: Some(summoner.clone()),
+                            cached_at: Instant::now(),
+                        },
+                    );
+                    entries.push(summoner.clone());
+                }
+                name_cache.insert(
+                    normalized_name,
+                    SummonerCacheEntry {
+                        entry,
+                        cached_at: Instant::now(),
+                    },
+                );
+            }
+        }
+
+        entries
+    }
+
+    fn champion_catalog(&self) -> Result<Vec<LeagueChampionSummary>, LeagueClientReadError> {
+        self.inner.champion_catalog()
+    }
+
+    fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
+        self.inner.accept_ready_check()
+    }
+
+    fn apply_champ_select_preferences(
+        &self,
+        pick_champion_id: Option<i64>,
+        ban_champion_id: Option<i64>,
+    ) -> Result<(), LeagueClientReadError> {
+        self.inner
+            .apply_champ_select_preferences(pick_champion_id, ban_champion_id)
+    }
+}
+
+fn summoner_cache_is_fresh(entry: &SummonerCacheEntry) -> bool {
+    let ttl = if entry.entry.is_some() {
+        SUMMONER_CACHE_TTL
+    } else {
+        SUMMONER_FAILURE_CACHE_TTL
+    };
+
+    entry.cached_at.elapsed() < ttl
+}
+
+fn normalize_player_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,6 +342,11 @@ pub struct SettingsPayload {
     pub startup_page: String,
     pub compact_mode: bool,
     pub activity_limit: i64,
+    pub auto_accept_enabled: bool,
+    pub auto_pick_enabled: bool,
+    pub auto_pick_champion_id: Option<i64>,
+    pub auto_ban_enabled: bool,
+    pub auto_ban_champion_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -83,6 +379,12 @@ pub struct ClearActivityEntriesCommand {
 #[serde(rename_all = "camelCase")]
 pub struct LeagueSelfSnapshotCommand {
     pub match_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChampSelectSnapshotCommand {
+    pub recent_limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +509,11 @@ pub fn save_settings(
             startup_page: command.settings.startup_page,
             compact_mode: command.settings.compact_mode,
             activity_limit: command.settings.activity_limit,
+            auto_accept_enabled: command.settings.auto_accept_enabled,
+            auto_pick_enabled: command.settings.auto_pick_enabled,
+            auto_pick_champion_id: command.settings.auto_pick_champion_id,
+            auto_ban_enabled: command.settings.auto_ban_enabled,
+            auto_ban_champion_id: command.settings.auto_ban_champion_id,
         },
     )
     .map_err(CommandError::from)
@@ -265,6 +572,17 @@ pub fn get_league_client_status(state: &AppState) -> Result<LeagueClientStatus, 
     application::get_league_client_status(&state.league_client).map_err(CommandError::from)
 }
 
+pub fn get_league_champion_catalog(
+    state: &AppState,
+) -> Result<Vec<LeagueChampionSummary>, CommandError> {
+    application::get_league_champion_catalog(&state.league_client).map_err(CommandError::from)
+}
+
+pub fn run_lobby_automation(state: &AppState) -> Result<(), CommandError> {
+    application::run_lobby_automation(&state.store, &state.league_client)
+        .map_err(CommandError::from)
+}
+
 pub fn get_league_self_snapshot(
     state: &AppState,
     command: LeagueSelfSnapshotCommand,
@@ -278,14 +596,48 @@ pub fn get_league_self_snapshot(
     .map_err(CommandError::from)
 }
 
+pub fn get_champ_select_snapshot(
+    state: &AppState,
+    command: ChampSelectSnapshotCommand,
+) -> Result<domain::ChampSelectSnapshot, CommandError> {
+    if let Some(snapshot) = state
+        .champ_select_cache
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|entry| entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL)
+        .map(|entry| entry.snapshot.clone())
+    {
+        return Ok(snapshot);
+    }
+
+    let recent_limit = command.recent_limit.unwrap_or(6);
+    let cached_reader = CachedLeagueClientReader {
+        inner: &state.league_client,
+        recent_stats_cache: &state.recent_stats_cache,
+        summoner_id_cache: &state.summoner_id_cache,
+        summoner_name_cache: &state.summoner_name_cache,
+    };
+    let snapshot = application::get_champ_select_snapshot(&cached_reader, recent_limit)?;
+    *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+        snapshot: snapshot.clone(),
+        cached_at: Instant::now(),
+    });
+
+    Ok(snapshot)
+}
+
 pub fn get_ranked_champion_stats(
     state: &AppState,
     command: RankedChampionStatsCommand,
 ) -> Result<RankedChampionStatsResponse, CommandError> {
-    application::get_ranked_champion_stats_from_store(&state.store, RankedChampionStatsInput {
-        lane: command.lane,
-        sort_by: command.sort_by,
-    })
+    application::get_ranked_champion_stats_from_store(
+        &state.store,
+        RankedChampionStatsInput {
+            lane: command.lane,
+            sort_by: command.sort_by,
+        },
+    )
     .map_err(CommandError::from)
 }
 
@@ -431,7 +783,12 @@ mod tests {
             "settings": {
                 "startupPage": "activity",
                 "compactMode": true,
-                "activityLimit": 25
+                "activityLimit": 25,
+                "autoAcceptEnabled": false,
+                "autoPickEnabled": true,
+                "autoPickChampionId": 103,
+                "autoBanEnabled": true,
+                "autoBanChampionId": 122
             }
         }))
         .expect("frontend-shaped settings command deserializes");
@@ -439,6 +796,11 @@ mod tests {
         assert_eq!(command.settings.startup_page, "activity");
         assert!(command.settings.compact_mode);
         assert_eq!(command.settings.activity_limit, 25);
+        assert!(!command.settings.auto_accept_enabled);
+        assert!(command.settings.auto_pick_enabled);
+        assert_eq!(command.settings.auto_pick_champion_id, Some(103));
+        assert!(command.settings.auto_ban_enabled);
+        assert_eq!(command.settings.auto_ban_champion_id, Some(122));
     }
 
     #[test]
@@ -510,6 +872,11 @@ mod tests {
                     startup_page: current_settings.startup_page.as_str().to_string(),
                     compact_mode: current_settings.compact_mode,
                     activity_limit: current_settings.activity_limit,
+                    auto_accept_enabled: current_settings.auto_accept_enabled,
+                    auto_pick_enabled: current_settings.auto_pick_enabled,
+                    auto_pick_champion_id: current_settings.auto_pick_champion_id,
+                    auto_ban_enabled: current_settings.auto_ban_enabled,
+                    auto_ban_champion_id: current_settings.auto_ban_champion_id,
                 },
             },
         )
@@ -597,7 +964,9 @@ mod tests {
 
         assert_eq!(
             command.url.as_deref(),
-            Some("https://raw.githubusercontent.com/example/data/main/ranked-champions/latest.json")
+            Some(
+                "https://raw.githubusercontent.com/example/data/main/ranked-champions/latest.json"
+            )
         );
         assert_eq!(command.lane, Some(RankedChampionLane::Middle));
         assert_eq!(command.sort_by, Some(RankedChampionSort::Overall));

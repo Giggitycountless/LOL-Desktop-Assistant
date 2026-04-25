@@ -13,16 +13,16 @@ export async function openSelfHistoryOverlayWindow() {
 
   const overlayWindow = new WebviewWindow(SELF_HISTORY_OVERLAY_WINDOW_LABEL, {
     alwaysOnTop: true,
-    center: false,
+    center: true,
     decorations: true,
     focus: true,
-    height: 560,
-    minHeight: 440,
-    minWidth: 320,
+    height: 800,
+    minHeight: 700,
+    minWidth: 1200,
     resizable: true,
     title: "Self History",
     url: selfHistoryOverlayWindowUrl(),
-    width: 380,
+    width: 1400,
   });
   void overlayWindow.once("tauri://error", () => {
     console.warn("Self history overlay window could not be opened.");

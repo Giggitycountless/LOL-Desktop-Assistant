@@ -16,6 +16,7 @@ const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_state_foundation.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_player_notes.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_ranked_champion_cache.sql");
+const MIGRATION_0005: &str = include_str!("../migrations/0005_lobby_automation_settings.sql");
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
@@ -283,6 +284,11 @@ fn run_migrations(connection: &mut Connection) -> StorageResult<()> {
             description: "ranked_champion_cache",
             sql: MIGRATION_0004,
         },
+        Migration {
+            version: 5,
+            description: "lobby_automation_settings",
+            sql: MIGRATION_0005,
+        },
     ] {
         let migration_is_applied = transaction
             .query_row(
@@ -326,7 +332,9 @@ fn read_schema_version(connection: &Connection) -> StorageResult<i64> {
 fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
     connection
         .query_row(
-            "SELECT startup_page, compact_mode, activity_limit, updated_at
+            "SELECT startup_page, compact_mode, activity_limit, auto_accept_enabled,
+                auto_pick_enabled, auto_pick_champion_id, auto_ban_enabled,
+                auto_ban_champion_id, updated_at
             FROM app_settings
             WHERE id = 1",
             [],
@@ -337,22 +345,44 @@ fn read_settings(connection: &Connection) -> StorageResult<AppSettings> {
                     startup_page,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             },
         )
         .map_err(StorageError::from)
-        .and_then(|(startup_page, compact_mode, activity_limit, updated_at)| {
-            let startup_page = StartupPage::parse(startup_page.as_str())
-                .ok_or(StorageError::InvalidStartupPage(startup_page))?;
-
-            Ok(AppSettings {
+        .and_then(
+            |(
                 startup_page,
-                compact_mode: int_to_bool(compact_mode),
+                compact_mode,
                 activity_limit,
+                auto_accept_enabled,
+                auto_pick_enabled,
+                auto_pick_champion_id,
+                auto_ban_enabled,
+                auto_ban_champion_id,
                 updated_at,
-            })
-        })
+            )| {
+                let startup_page = StartupPage::parse(startup_page.as_str())
+                    .ok_or(StorageError::InvalidStartupPage(startup_page))?;
+
+                Ok(AppSettings {
+                    startup_page,
+                    compact_mode: int_to_bool(compact_mode),
+                    activity_limit,
+                    auto_accept_enabled: int_to_bool(auto_accept_enabled),
+                    auto_pick_enabled: int_to_bool(auto_pick_enabled),
+                    auto_pick_champion_id,
+                    auto_ban_enabled: int_to_bool(auto_ban_enabled),
+                    auto_ban_champion_id,
+                    updated_at,
+                })
+            },
+        )
 }
 
 fn write_settings(connection: &Connection, settings: &SettingsValues) -> StorageResult<()> {
@@ -361,12 +391,22 @@ fn write_settings(connection: &Connection, settings: &SettingsValues) -> Storage
         SET startup_page = ?1,
             compact_mode = ?2,
             activity_limit = ?3,
+            auto_accept_enabled = ?4,
+            auto_pick_enabled = ?5,
+            auto_pick_champion_id = ?6,
+            auto_ban_enabled = ?7,
+            auto_ban_champion_id = ?8,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = 1",
         (
             settings.startup_page.as_str(),
             bool_to_int(settings.compact_mode),
             settings.activity_limit,
+            bool_to_int(settings.auto_accept_enabled),
+            bool_to_int(settings.auto_pick_enabled),
+            settings.auto_pick_champion_id,
+            bool_to_int(settings.auto_ban_enabled),
+            settings.auto_ban_champion_id,
         ),
     )?;
 
@@ -590,7 +630,8 @@ fn read_latest_ranked_champion_snapshot(
         )
         .optional()?;
 
-    let Some((snapshot_id, source, patch, region, queue, tier, generated_at, imported_at)) = metadata
+    let Some((snapshot_id, source, patch, region, queue, tier, generated_at, imported_at)) =
+        metadata
     else {
         return Ok(None);
     };
@@ -803,9 +844,9 @@ mod tests {
         let store = SqliteStore::initialize(&data_dir).expect("storage initializes");
 
         assert!(store.database_path().exists());
-        assert_eq!(store.health().expect("storage health").schema_version, 4);
+        assert_eq!(store.health().expect("storage health").schema_version, 5);
         assert_eq!(store.get_settings().expect("settings").activity_limit, 100);
-        assert_eq!(migration_count(store.database_path()), 4);
+        assert_eq!(migration_count(store.database_path()), 5);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -818,8 +859,8 @@ mod tests {
         let second = SqliteStore::initialize(&data_dir).expect("second initialization");
 
         assert_eq!(first.database_path(), second.database_path());
-        assert_eq!(second.health().expect("storage health").schema_version, 4);
-        assert_eq!(migration_count(second.database_path()), 4);
+        assert_eq!(second.health().expect("storage health").schema_version, 5);
+        assert_eq!(migration_count(second.database_path()), 5);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -853,12 +894,12 @@ mod tests {
 
         let store = SqliteStore::initialize(&data_dir).expect("upgrade database");
 
-        assert_eq!(store.health().expect("storage health").schema_version, 4);
+        assert_eq!(store.health().expect("storage health").schema_version, 5);
         assert_eq!(
             store.get_settings().expect("settings").startup_page,
             StartupPage::Dashboard
         );
-        assert_eq!(migration_count(store.database_path()), 4);
+        assert_eq!(migration_count(store.database_path()), 5);
 
         let _ = fs::remove_dir_all(data_dir);
     }
@@ -873,11 +914,21 @@ mod tests {
                 startup_page: StartupPage::Activity,
                 compact_mode: true,
                 activity_limit: 25,
+                auto_accept_enabled: false,
+                auto_pick_enabled: true,
+                auto_pick_champion_id: Some(103),
+                auto_ban_enabled: true,
+                auto_ban_champion_id: Some(122),
             })
             .expect("settings saved");
 
         assert_eq!(settings.startup_page, StartupPage::Activity);
         assert!(settings.compact_mode);
+        assert!(!settings.auto_accept_enabled);
+        assert!(settings.auto_pick_enabled);
+        assert_eq!(settings.auto_pick_champion_id, Some(103));
+        assert!(settings.auto_ban_enabled);
+        assert_eq!(settings.auto_ban_champion_id, Some(122));
         assert_eq!(store.get_settings().expect("settings").activity_limit, 25);
 
         let _ = fs::remove_dir_all(data_dir);
@@ -956,6 +1007,11 @@ mod tests {
                     startup_page: StartupPage::Activity,
                     compact_mode: true,
                     activity_limit: 25,
+                    auto_accept_enabled: true,
+                    auto_pick_enabled: false,
+                    auto_pick_champion_id: None,
+                    auto_ban_enabled: false,
+                    auto_ban_champion_id: None,
                 },
                 &[LocalActivityEntry {
                     kind: ActivityKind::Note,
@@ -1094,9 +1150,11 @@ mod tests {
         let connection = Connection::open(database_path).expect("open test database");
 
         connection
-            .query_row("SELECT COUNT(*) FROM ranked_champion_snapshots", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM ranked_champion_snapshots",
+                [],
+                |row| row.get(0),
+            )
             .expect("query ranked snapshot count")
     }
 

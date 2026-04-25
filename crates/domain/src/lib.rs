@@ -37,6 +37,11 @@ pub struct AppSettings {
     pub startup_page: StartupPage,
     pub compact_mode: bool,
     pub activity_limit: i64,
+    pub auto_accept_enabled: bool,
+    pub auto_pick_enabled: bool,
+    pub auto_pick_champion_id: Option<i64>,
+    pub auto_ban_enabled: bool,
+    pub auto_ban_champion_id: Option<i64>,
     pub updated_at: String,
 }
 
@@ -46,6 +51,20 @@ pub struct SettingsValues {
     pub startup_page: StartupPage,
     pub compact_mode: bool,
     pub activity_limit: i64,
+    #[serde(default = "default_true")]
+    pub auto_accept_enabled: bool,
+    #[serde(default)]
+    pub auto_pick_enabled: bool,
+    #[serde(default)]
+    pub auto_pick_champion_id: Option<i64>,
+    #[serde(default)]
+    pub auto_ban_enabled: bool,
+    #[serde(default)]
+    pub auto_ban_champion_id: Option<i64>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl AppSettings {
@@ -54,6 +73,11 @@ impl AppSettings {
             startup_page: self.startup_page,
             compact_mode: self.compact_mode,
             activity_limit: self.activity_limit,
+            auto_accept_enabled: self.auto_accept_enabled,
+            auto_pick_enabled: self.auto_pick_enabled,
+            auto_pick_champion_id: self.auto_pick_champion_id,
+            auto_ban_enabled: self.auto_ban_enabled,
+            auto_ban_champion_id: self.auto_ban_champion_id,
         }
     }
 }
@@ -272,6 +296,13 @@ pub struct LeagueGameAsset {
     pub image: LeagueImageAsset,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeagueChampionSummary {
+    pub champion_id: i64,
+    pub champion_name: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LeagueGameAssetKind {
@@ -298,7 +329,7 @@ pub struct CurrentSummonerProfile {
     pub profile_icon_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RankedQueueSummary {
     pub queue: RankedQueue,
@@ -310,7 +341,7 @@ pub struct RankedQueueSummary {
     pub is_ranked: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RankedQueue {
     SoloDuo,
@@ -436,7 +467,7 @@ pub enum RankedChampionSort {
     PickRate,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentMatchSummary {
     pub game_id: i64,
@@ -452,7 +483,7 @@ pub struct RecentMatchSummary {
     pub game_duration_seconds: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MatchResult {
     Win,
@@ -568,7 +599,7 @@ pub struct ParticipantPublicProfile {
     pub warnings: Vec<LeagueDataWarning>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParticipantRecentStats {
     pub match_count: usize,
@@ -583,4 +614,31 @@ pub enum KdaTag {
     High,
     Standard,
     Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChampSelectPlayer {
+    pub summoner_id: i64,
+    pub puuid: String,
+    pub display_name: String,
+    pub champion_id: Option<i64>,
+    pub champion_name: Option<String>,
+    pub team: ChampSelectTeam,
+    pub ranked_queues: Vec<RankedQueueSummary>,
+    pub recent_stats: Option<ParticipantRecentStats>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChampSelectTeam {
+    Ally,
+    Enemy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChampSelectSnapshot {
+    pub players: Vec<ChampSelectPlayer>,
+    pub cached_at: String,
 }

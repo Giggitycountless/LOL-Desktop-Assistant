@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import type { SaveSettingsInput, StartupPage } from "../backend/types";
+import { fetchLeagueChampionCatalog } from "../backend/leagueClient";
+import type { LeagueChampionSummary, SaveSettingsInput, StartupPage } from "../backend/types";
 import { useAppState } from "../state/AppStateProvider";
 
 const MIN_ACTIVITY_LIMIT = 1;
@@ -18,7 +19,14 @@ export function Settings() {
     startupPage: "dashboard",
     compactMode: false,
     activityLimit: 100,
+    autoAcceptEnabled: true,
+    autoPickEnabled: false,
+    autoPickChampionId: null,
+    autoBanEnabled: false,
+    autoBanChampionId: null,
   });
+  const [champions, setChampions] = useState<LeagueChampionSummary[]>([]);
+  const [isLoadingChampions, setIsLoadingChampions] = useState(false);
   const [exportJson, setExportJson] = useState("");
   const [importJson, setImportJson] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
@@ -36,16 +44,52 @@ export function Settings() {
         startupPage: persisted.startupPage,
         compactMode: persisted.compactMode,
         activityLimit: persisted.activityLimit,
+        autoAcceptEnabled: persisted.autoAcceptEnabled,
+        autoPickEnabled: persisted.autoPickEnabled,
+        autoPickChampionId: persisted.autoPickChampionId,
+        autoBanEnabled: persisted.autoBanEnabled,
+        autoBanChampionId: persisted.autoBanChampionId,
       });
     }
   }, [persisted]);
+
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoadingChampions(true);
+
+    fetchLeagueChampionCatalog()
+      .then((records) => {
+        if (isMounted) {
+          setChampions(records);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setChampions([]);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsLoadingChampions(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const validationMessage = useMemo(() => validateDraft(draft), [draft]);
   const hasUnsavedChanges = Boolean(
     persisted &&
       (draft.startupPage !== persisted.startupPage ||
         draft.compactMode !== persisted.compactMode ||
-        draft.activityLimit !== persisted.activityLimit),
+        draft.activityLimit !== persisted.activityLimit ||
+        draft.autoAcceptEnabled !== persisted.autoAcceptEnabled ||
+        draft.autoPickEnabled !== persisted.autoPickEnabled ||
+        draft.autoPickChampionId !== persisted.autoPickChampionId ||
+        draft.autoBanEnabled !== persisted.autoBanEnabled ||
+        draft.autoBanChampionId !== persisted.autoBanChampionId),
   );
   const canSave = hasUnsavedChanges && !validationMessage && !isSaving;
 
@@ -191,6 +235,64 @@ export function Settings() {
                 {validationMessage && <span className="text-sm font-medium text-amber-700">{validationMessage}</span>}
               </label>
 
+              <div className="grid gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4">
+                <h3 className="text-sm font-semibold text-zinc-950">Lobby Automation</h3>
+                <label className="flex items-center justify-between gap-4">
+                  <span className="text-sm font-medium text-zinc-700">Auto accept match</span>
+                  <input
+                    type="checkbox"
+                    checked={draft.autoAcceptEnabled}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        autoAcceptEnabled: event.target.checked,
+                      }))
+                    }
+                    className="h-5 w-5 accent-rose-700"
+                  />
+                </label>
+
+                <AutomationChampionPicker
+                  label="Auto pick champion"
+                  enabled={draft.autoPickEnabled}
+                  championId={draft.autoPickChampionId}
+                  champions={champions}
+                  isLoading={isLoadingChampions}
+                  onEnabledChange={(enabled) =>
+                    setDraft((current) => ({
+                      ...current,
+                      autoPickEnabled: enabled,
+                    }))
+                  }
+                  onChampionChange={(championId) =>
+                    setDraft((current) => ({
+                      ...current,
+                      autoPickChampionId: championId,
+                    }))
+                  }
+                />
+
+                <AutomationChampionPicker
+                  label="Auto ban champion"
+                  enabled={draft.autoBanEnabled}
+                  championId={draft.autoBanChampionId}
+                  champions={champions}
+                  isLoading={isLoadingChampions}
+                  onEnabledChange={(enabled) =>
+                    setDraft((current) => ({
+                      ...current,
+                      autoBanEnabled: enabled,
+                    }))
+                  }
+                  onChampionChange={(championId) =>
+                    setDraft((current) => ({
+                      ...current,
+                      autoBanChampionId: championId,
+                    }))
+                  }
+                />
+              </div>
+
               <button
                 type="submit"
                 disabled={!canSave}
@@ -207,6 +309,9 @@ export function Settings() {
               <SettingRow label="Startup page" value={persisted?.startupPage ?? "Loading"} />
               <SettingRow label="Compact mode" value={persisted?.compactMode ? "On" : "Off"} />
               <SettingRow label="Activity limit" value={persisted ? String(persisted.activityLimit) : "Loading"} />
+              <SettingRow label="Auto accept" value={persisted ? (persisted.autoAcceptEnabled ? "On" : "Off") : "Loading"} />
+              <SettingRow label="Auto pick" value={persisted ? automationSummary(persisted.autoPickEnabled, persisted.autoPickChampionId, champions) : "Loading"} />
+              <SettingRow label="Auto ban" value={persisted ? automationSummary(persisted.autoBanEnabled, persisted.autoBanChampionId, champions) : "Loading"} />
               <SettingRow label="Updated" value={persisted?.updatedAt ?? "Loading"} />
             </dl>
           </div>
@@ -287,6 +392,68 @@ function SettingRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function AutomationChampionPicker({
+  label,
+  enabled,
+  championId,
+  champions,
+  isLoading,
+  onEnabledChange,
+  onChampionChange,
+}: {
+  label: string;
+  enabled: boolean;
+  championId: number | null;
+  champions: LeagueChampionSummary[];
+  isLoading: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+  onChampionChange: (championId: number | null) => void;
+}) {
+  const listId = `${label.toLowerCase().replace(/\s+/g, "-")}-list`;
+  const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    const selected = champions.find((champion) => champion.championId === championId);
+    setQuery(selected ? championLabel(selected) : "");
+  }, [championId, champions]);
+
+  function handleQueryChange(value: string) {
+    setQuery(value);
+    const champion = findChampion(value, champions);
+    onChampionChange(champion?.championId ?? null);
+  }
+
+  return (
+    <div className="grid gap-2 rounded-md border border-zinc-200 bg-white px-3 py-3">
+      <label className="flex items-center justify-between gap-4">
+        <span className="text-sm font-medium text-zinc-700">{label}</span>
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(event) => onEnabledChange(event.target.checked)}
+          className="h-5 w-5 accent-rose-700"
+        />
+      </label>
+      <div className="grid gap-1">
+        <input
+          type="search"
+          list={listId}
+          value={query}
+          disabled={!enabled}
+          placeholder={isLoading ? "Loading champions" : "Search champion"}
+          onChange={(event) => handleQueryChange(event.target.value)}
+          className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
+        />
+        <datalist id={listId}>
+          {champions.map((champion) => (
+            <option key={champion.championId} value={championLabel(champion)} />
+          ))}
+        </datalist>
+      </div>
+    </div>
+  );
+}
+
 function validateDraft(draft: SaveSettingsInput) {
   if (!Number.isInteger(draft.activityLimit)) {
     return "Activity limit must be a whole number";
@@ -296,5 +463,44 @@ function validateDraft(draft: SaveSettingsInput) {
     return `Activity limit must be between ${MIN_ACTIVITY_LIMIT} and ${MAX_ACTIVITY_LIMIT}`;
   }
 
+  if (draft.autoPickEnabled && !draft.autoPickChampionId) {
+    return "Auto pick requires a champion";
+  }
+
+  if (draft.autoBanEnabled && !draft.autoBanChampionId) {
+    return "Auto ban requires a champion";
+  }
+
   return null;
+}
+
+function findChampion(value: string, champions: LeagueChampionSummary[]) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  return (
+    champions.find((champion) => championLabel(champion).toLowerCase() === normalized) ??
+    champions.find((champion) => champion.championName.toLowerCase() === normalized) ??
+    champions.find((champion) => String(champion.championId) === normalized) ??
+    null
+  );
+}
+
+function championLabel(champion: LeagueChampionSummary) {
+  return `${champion.championName} (${champion.championId})`;
+}
+
+function automationSummary(
+  enabled: boolean | undefined,
+  championId: number | null | undefined,
+  champions: LeagueChampionSummary[],
+) {
+  if (!enabled) {
+    return "Off";
+  }
+
+  const champion = champions.find((record) => record.championId === championId);
+  return champion?.championName ?? (championId ? String(championId) : "No champion");
 }

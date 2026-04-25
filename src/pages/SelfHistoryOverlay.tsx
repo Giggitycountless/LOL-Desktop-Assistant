@@ -1,181 +1,304 @@
 import { useEffect } from "react";
 
+import type { ChampSelectPlayer, RankedQueueSummary, RecentMatchSummary } from "../backend/types";
 import { useAppState } from "../state/AppStateProvider";
-import type { RecentMatchSummary } from "../backend/types";
+
+const TEAM_SIZE = 5;
+const MATCH_ROWS = 10;
 
 export function SelfHistoryOverlay() {
   const {
-    isLeagueClientLoading,
+    champSelectSnapshot,
     leagueImages,
     leagueSelfSnapshot,
     loadLeagueChampionIcon,
     loadLeagueProfileIcon,
     refreshLeagueClient,
   } = useAppState();
-  const summoner = leagueSelfSnapshot?.summoner ?? null;
-  const profileIconId = summoner?.profileIconId ?? null;
-  const profileIconUrl = profileIconId ? leagueImages.profileIcons[profileIconId] : undefined;
-  const recentMatches = leagueSelfSnapshot?.recentMatches ?? [];
-  const topChampions = leagueSelfSnapshot?.recentPerformance.topChampions ?? [];
-  const soloDuo = leagueSelfSnapshot?.rankedQueues.find((queue) => queue.queue === "soloDuo");
+  const profileIconId = leagueSelfSnapshot?.summoner?.profileIconId ?? null;
+  const players = champSelectSnapshot?.players ?? [];
+  const allies = fillTeam(players.filter((player) => player.team === "ally"));
+  const enemies = fillTeam(players.filter((player) => player.team === "enemy"));
+
+  useEffect(() => {
+    void refreshLeagueClient({ matchLimit: 6 });
+  }, [refreshLeagueClient]);
 
   useEffect(() => {
     void loadLeagueProfileIcon(profileIconId);
   }, [loadLeagueProfileIcon, profileIconId]);
 
   useEffect(() => {
-    for (const match of recentMatches) {
-      void loadLeagueChampionIcon(match.championId);
+    for (const player of players) {
+      void loadLeagueChampionIcon(player.championId);
+      for (const match of player.recentStats?.recentMatches ?? []) {
+        void loadLeagueChampionIcon(match.championId);
+      }
     }
-    for (const champion of topChampions) {
-      void loadLeagueChampionIcon(champion.championId);
-    }
-  }, [loadLeagueChampionIcon, recentMatches, topChampions]);
+  }, [loadLeagueChampionIcon, players]);
 
   return (
-    <main className="min-h-screen overflow-auto bg-zinc-950 p-3 text-zinc-100">
-      <section className="rounded-lg border border-zinc-800 bg-zinc-900 p-4 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <Avatar fallback={summoner ? initials(summoner.displayName) : "LoL"} src={profileIconUrl} />
-            <div className="min-w-0">
-              <p className="truncate text-base font-semibold">{summoner?.displayName ?? "Self History"}</p>
-              <p className="mt-0.5 text-xs font-medium text-zinc-400">
-                {summoner ? `Level ${summoner.summonerLevel}` : statusLabel(leagueSelfSnapshot?.status.phase)}
-              </p>
-            </div>
-          </div>
-          <button
-            className="inline-flex h-9 items-center rounded-md border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-100 transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isLeagueClientLoading}
-            onClick={() => refreshLeagueClient({ matchLimit: 6 })}
-            type="button"
-          >
-            {isLeagueClientLoading ? "Loading" : "Refresh"}
-          </button>
+    <main className="relative min-h-screen overflow-hidden bg-[#eef1f5] p-2 text-slate-700">
+      <div className="grid h-[calc(100vh-4rem)] grid-cols-2 gap-2">
+        <TeamBoard imageUrls={leagueImages.championIcons} players={enemies} tone="enemy" />
+        <TeamBoard imageUrls={leagueImages.championIcons} players={allies} tone="ally" />
+      </div>
+      {players.length === 0 && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 rounded-md border border-slate-200 bg-white/95 px-5 py-3 text-center text-sm font-bold text-slate-500 shadow-sm">
+          未读取到英雄选择数据
         </div>
-
-        <div className="mt-4 grid grid-cols-3 gap-2">
-          <Metric label="KDA" value={formatKda(leagueSelfSnapshot?.recentPerformance.averageKda ?? null)} />
-          <Metric label="Rank" value={formatRank(soloDuo)} />
-          <Metric label="Games" value={String(leagueSelfSnapshot?.recentPerformance.matchCount ?? 0)} />
-        </div>
-      </section>
-
-      <section className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4 shadow-sm">
-        <h2 className="text-sm font-semibold">Recent Champions</h2>
-        <div className="mt-3 grid gap-2">
-          {topChampions.length === 0 && <p className="text-sm text-zinc-400">No recent champion data</p>}
-          {topChampions.map((champion) => (
-            <div className="flex min-w-0 items-center gap-2" key={`${champion.championId ?? champion.championName}-${champion.championName}`}>
-              <ChampionIcon championName={champion.championName} src={champion.championId ? leagueImages.championIcons[champion.championId] : undefined} />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold">{champion.championName}</p>
-                <p className="text-xs text-zinc-400">{champion.games} recent {champion.games === 1 ? "game" : "games"}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4 shadow-sm">
-        <h2 className="text-sm font-semibold">Recent Matches</h2>
-        <div className="mt-3 grid gap-2">
-          {recentMatches.length === 0 && <p className="text-sm text-zinc-400">No recent matches available</p>}
-          {recentMatches.slice(0, 6).map((match) => (
-            <MatchRow imageUrl={match.championId ? leagueImages.championIcons[match.championId] : undefined} key={match.gameId} match={match} />
-          ))}
-        </div>
-      </section>
+      )}
+      <SummaryBar allies={allies} enemies={enemies} />
     </main>
   );
 }
 
-function MatchRow({ imageUrl, match }: { imageUrl: string | undefined; match: RecentMatchSummary }) {
+function TeamBoard({
+  imageUrls,
+  players,
+  tone,
+}: {
+  imageUrls: Record<number, string>;
+  players: Array<ChampSelectPlayer | null>;
+  tone: "ally" | "enemy";
+}) {
   return (
-    <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/60 p-2">
-      <ChampionIcon championName={match.championName} src={imageUrl} />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-semibold">{match.championName}</p>
-        <p className="mt-0.5 truncate text-xs text-zinc-400">{match.queueName ?? "Queue unavailable"}</p>
+    <section className="grid h-full grid-cols-5 gap-2 rounded-md bg-white p-2 shadow-[0_0_0_1px_rgba(148,163,184,0.25),0_2px_8px_rgba(15,23,42,0.08)]">
+      {players.map((player, index) => (
+        <PlayerTrack
+          imageUrls={imageUrls}
+          key={player ? `${tone}-${player.summonerId}` : `${tone}-empty-${index}`}
+          player={player}
+          tone={tone}
+        />
+      ))}
+    </section>
+  );
+}
+
+function PlayerTrack({
+  imageUrls,
+  player,
+  tone,
+}: {
+  imageUrls: Record<number, string>;
+  player: ChampSelectPlayer | null;
+  tone: "ally" | "enemy";
+}) {
+  const selectedChampionUrl = player?.championId ? imageUrls[player.championId] : undefined;
+  const rows = fillMatches(player?.recentStats?.recentMatches ?? []);
+  const soloRank = player?.rankedQueues.find((queue) => queue.queue === "soloDuo");
+  const flexRank = player?.rankedQueues.find((queue) => queue.queue === "flex");
+  const score = player ? playerScore(player) : 0;
+  const badge = player ? playerBadge(player, tone) : "";
+
+  return (
+    <article className="min-w-0">
+      <div className="grid h-14 grid-cols-[3.5rem_minmax(0,1fr)] gap-1">
+        <ChampionPortrait displayName={player?.displayName ?? "未定级"} src={selectedChampionUrl} />
+        <div className="grid gap-1">
+          <RankPill value={formatRank(soloRank)} />
+          <RankPill muted value={formatRank(flexRank)} />
+        </div>
       </div>
-      <div className="text-right">
-        <p className={["text-xs font-bold", match.result === "win" ? "text-emerald-400" : "text-rose-400"].join(" ")}>
-          {match.result === "win" ? "Win" : match.result === "loss" ? "Loss" : "Unknown"}
-        </p>
-        <p className="mt-0.5 text-xs font-semibold text-zinc-300">
-          {match.kills}/{match.deaths}/{match.assists}
-        </p>
+
+      <div className="relative mt-2 h-9 rounded border border-slate-200 bg-white px-2 py-1.5 shadow-sm">
+        <p className="truncate text-center text-xs font-black italic text-slate-700">Score: {score}</p>
+        {badge && (
+          <span className={["absolute -right-px -top-2 flex h-5 min-w-7 items-center justify-center rounded-sm px-1 text-xs font-black text-white", tone === "ally" ? "bg-emerald-500" : "bg-blue-500"].join(" ")}>
+            {badge}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 grid gap-1.5">
+        {rows.map((match, index) => (
+          <MatchRow
+            imageUrl={match?.championId ? imageUrls[match.championId] : undefined}
+            key={match ? match.gameId : `empty-${index}`}
+            match={match}
+          />
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function MatchRow({ imageUrl, match }: { imageUrl: string | undefined; match: RecentMatchSummary | null }) {
+  return (
+    <div className="grid h-8 grid-cols-[2rem_minmax(0,1fr)] gap-1.5">
+      <SmallChampionIcon championName={match?.championName ?? "?"} src={imageUrl} />
+      <div className={["flex h-8 min-w-0 items-center justify-center rounded px-1 text-sm font-black italic", match ? resultClass(match) : "bg-slate-50 text-slate-300"].join(" ")}>
+        <span className="truncate">{match ? `${match.kills}-${match.deaths}-${match.assists}` : ""}</span>
       </div>
     </div>
   );
 }
 
-function Avatar({ fallback, src }: { fallback: string; src: string | undefined }) {
-  if (src) {
-    return <img alt="" className="h-12 w-12 shrink-0 rounded-md border border-zinc-700 object-cover" src={src} />;
-  }
+function SummaryBar({
+  allies,
+  enemies,
+}: {
+  allies: Array<ChampSelectPlayer | null>;
+  enemies: Array<ChampSelectPlayer | null>;
+}) {
+  const allyWins = teamWins(allies);
+  const allyGames = teamGames(allies);
+  const enemyWins = teamWins(enemies);
+  const enemyGames = teamGames(enemies);
 
   return (
-    <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-zinc-700 bg-zinc-800 text-sm font-bold text-zinc-300">
-      {fallback}
+    <div className="mt-2 flex gap-3">
+      <SummaryCard label="友方胜利次数" tone="ally" value={`${allyWins}/${allyGames}`} />
+      <SummaryCard label="敌方胜利次数" tone="enemy" value={`${enemyWins}/${enemyGames}`} />
     </div>
   );
 }
 
-function ChampionIcon({ championName, src }: { championName: string; src: string | undefined }) {
+function SummaryCard({ label, tone, value }: { label: string; tone: "ally" | "enemy"; value: string }) {
+  return (
+    <div className="rounded bg-white px-3 py-1.5 shadow-[0_0_0_1px_rgba(148,163,184,0.25)]">
+      <p className="text-xs font-bold text-slate-400">{label}</p>
+      <p className={["mt-0.5 text-base font-black", tone === "ally" ? "text-emerald-500" : "text-rose-500"].join(" ")}>
+        {tone === "ally" ? "♧ " : "♤ "}
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function ChampionPortrait({ displayName, src }: { displayName: string; src: string | undefined }) {
   if (src) {
-    return <img alt="" className="h-9 w-9 shrink-0 rounded border border-zinc-700 object-cover" src={src} />;
+    return <img alt="" className="h-14 w-14 rounded border border-slate-300 object-cover shadow-sm" src={src} />;
   }
 
   return (
-    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-zinc-700 bg-zinc-800 text-xs font-bold text-zinc-400">
+    <div className="flex h-14 w-14 items-center justify-center rounded border border-slate-300 bg-slate-200 text-sm font-black text-slate-500 shadow-sm">
+      {initials(displayName)}
+    </div>
+  );
+}
+
+function SmallChampionIcon({ championName, src }: { championName: string; src: string | undefined }) {
+  if (src) {
+    return <img alt="" className="h-8 w-8 rounded border border-slate-300 object-cover shadow-sm" src={src} />;
+  }
+
+  return (
+    <div className="flex h-8 w-8 items-center justify-center rounded border border-slate-300 bg-slate-100 text-[10px] font-black text-slate-400">
       {initials(championName)}
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function RankPill({ muted = false, value }: { muted?: boolean; value: string }) {
   return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className="mt-1 truncate text-sm font-bold text-zinc-100">{value}</p>
+    <div className={["flex h-[1.625rem] min-w-0 items-center justify-center rounded bg-blue-50 px-1 text-sm font-black", muted ? "text-blue-300" : "text-blue-500"].join(" ")}>
+      <span className="truncate">{value}</span>
     </div>
   );
 }
 
-function formatKda(value: number | null) {
-  return value === null ? "--" : value.toFixed(1);
+function fillTeam(players: ChampSelectPlayer[]) {
+  return Array.from({ length: TEAM_SIZE }, (_, index) => players[index] ?? null);
 }
 
-function formatRank(summary: { tier: string | null; division: string | null; leaguePoints: number | null; isRanked: boolean } | undefined) {
+function fillMatches(matches: RecentMatchSummary[]) {
+  return Array.from({ length: MATCH_ROWS }, (_, index) => matches[index] ?? null);
+}
+
+function teamWins(players: Array<ChampSelectPlayer | null>) {
+  return players.reduce((total, player) => total + (player?.recentStats?.recentMatches.filter((match) => match.result === "win").length ?? 0), 0);
+}
+
+function teamGames(players: Array<ChampSelectPlayer | null>) {
+  return players.reduce((total, player) => total + (player?.recentStats?.recentMatches.length ?? 0), 0);
+}
+
+function playerScore(player: ChampSelectPlayer) {
+  const stats = player.recentStats;
+  if (!stats || stats.recentMatches.length === 0) {
+    return 0;
+  }
+
+  const wins = stats.recentMatches.filter((match) => match.result === "win").length;
+  const kda = stats.averageKda ?? 0;
+  const volume = stats.matchCount * 408;
+
+  return Math.round(volume + wins * 777 + kda * 1200);
+}
+
+function playerBadge(player: ChampSelectPlayer, tone: "ally" | "enemy") {
+  const stats = player.recentStats;
+  if (!stats || stats.recentMatches.length === 0) {
+    return "";
+  }
+
+  const wins = stats.recentMatches.filter((match) => match.result === "win").length;
+  if (tone === "ally") {
+    return String(Math.max(1, wins));
+  }
+
+  return String(Math.max(1, stats.matchCount - wins));
+}
+
+function formatRank(summary: RankedQueueSummary | undefined) {
   if (!summary || !summary.isRanked || !summary.tier) {
-    return "Unranked";
+    return "未定级";
   }
 
-  return `${summary.tier}${summary.division ? ` ${summary.division}` : ""}`;
+  const tier = rankTierLabel(summary.tier);
+  const division = summary.division ? romanToNumber(summary.division) : "";
+
+  return `${tier}${division}`;
 }
 
-function statusLabel(phase: string | undefined) {
-  switch (phase) {
-    case "connected":
-      return "Connected";
-    case "partialData":
-      return "Partial data";
-    case "notLoggedIn":
-      return "Not logged in";
-    case "notRunning":
-      return "Not running";
-    default:
-      return "Unavailable";
+function rankTierLabel(tier: string) {
+  const labels: Record<string, string> = {
+    IRON: "黑铁",
+    BRONZE: "青铜",
+    SILVER: "白银",
+    GOLD: "黄金",
+    PLATINUM: "铂金",
+    EMERALD: "翡翠",
+    DIAMOND: "钻石",
+    MASTER: "大师",
+    GRANDMASTER: "宗师",
+    CHALLENGER: "王者",
+  };
+
+  return labels[tier.toUpperCase()] ?? tier;
+}
+
+function romanToNumber(value: string) {
+  const labels: Record<string, string> = {
+    I: "Ⅰ",
+    II: "Ⅱ",
+    III: "Ⅲ",
+    IV: "Ⅳ",
+  };
+
+  return labels[value.toUpperCase()] ?? value;
+}
+
+function resultClass(match: RecentMatchSummary) {
+  if (match.result === "win") {
+    return "bg-emerald-100 text-emerald-600";
   }
+  if (match.result === "loss") {
+    return "bg-rose-100 text-rose-500";
+  }
+
+  return "bg-slate-100 text-slate-400";
 }
 
 function initials(value: string) {
-  return value
+  const letters = value
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
+
+  return letters || "?";
 }

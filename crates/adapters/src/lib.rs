@@ -6,17 +6,18 @@ use std::{
 };
 
 use application::{
-    LeagueClientReadError, LeagueClientReader, RankedChampionDataError, RankedChampionDataProvider,
-    RankedChampionRefreshInput,
+    ChampSelectSessionData, LeagueClientReadError, LeagueClientReader, RankedChampionDataError,
+    RankedChampionDataProvider, RankedChampionRefreshInput, SummonerBatchEntry,
 };
 use domain::{
-    CurrentSummonerProfile, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
-    LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset,
-    LeagueSelfData, MatchResult, ParticipantRecentStats, RankedChampionDataSnapshot,
-    RankedChampionLane, RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
+    CurrentSummonerProfile, LeagueChampionSummary, LeagueClientConnection, LeagueClientPhase,
+    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind,
+    LeagueImageAsset, LeagueSelfData, MatchResult, ParticipantRecentStats,
+    RankedChampionDataSnapshot, RankedChampionLane, RankedChampionStat, RankedQueue,
+    RankedQueueSummary, RecentMatchSummary,
 };
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sysinfo::{ProcessesToUpdate, System};
 
@@ -76,15 +77,11 @@ impl RankedChampionDataProvider for RemoteRankedChampionJsonProvider {
             ));
         }
 
-        let response = self
-            .http_client
-            .get(url)
-            .send()
-            .map_err(|_| {
-                RankedChampionDataError::Unavailable(
-                    "Ranked champion data could not be downloaded".to_string(),
-                )
-            })?;
+        let response = self.http_client.get(url).send().map_err(|_| {
+            RankedChampionDataError::Unavailable(
+                "Ranked champion data could not be downloaded".to_string(),
+            )
+        })?;
 
         if !response.status().is_success() {
             return Err(RankedChampionDataError::Unavailable(format!(
@@ -477,6 +474,66 @@ impl LocalLeagueClient {
         Ok(participant_recent_stats(recent_matches))
     }
 
+    fn read_live_client_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError> {
+        let http_client = Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .connect_timeout(REQUEST_TIMEOUT)
+            .no_proxy()
+            .tls_danger_accept_invalid_certs(true)
+            .build()
+            .map_err(|_| {
+                LeagueClientReadError::Integration(
+                    "Live Client local connection could not be prepared".to_string(),
+                )
+            })?;
+        let players = live_client_get_json::<Vec<GameClientPlayer>>(
+            &http_client,
+            "/liveclientdata/playerlist",
+        )?;
+        let active_player = live_client_get_json::<GameClientActivePlayer>(
+            &http_client,
+            "/liveclientdata/activeplayer",
+        )
+        .ok();
+        let active_team = active_player
+            .as_ref()
+            .and_then(|active| {
+                let active_name = normalize_player_name(active.summoner_name.as_str());
+                players.iter().find_map(|player| {
+                    if normalize_player_name(player.summoner_name.as_str()) == active_name {
+                        Some(player.team.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .or_else(|| players.first().map(|player| player.team.clone()))
+            .unwrap_or_else(|| "ORDER".to_string());
+        let mut ally_names = Vec::new();
+        let mut enemy_names = Vec::new();
+
+        for player in players {
+            if player.summoner_name.trim().is_empty() {
+                continue;
+            }
+
+            if strings_match(Some(active_team.as_str()), Some(player.team.as_str())) {
+                ally_names.push(player.summoner_name);
+            } else {
+                enemy_names.push(player.summoner_name);
+            }
+        }
+
+        Ok(ChampSelectSessionData {
+            ally_ids: Vec::new(),
+            enemy_ids: Vec::new(),
+            champion_selections: HashMap::new(),
+            ally_names,
+            enemy_names,
+            champion_selections_by_name: HashMap::new(),
+        })
+    }
+
     fn open_session(&self) -> SessionOpenResult {
         let lockfile_path = match self.discover_lockfile_path() {
             LockfileDiscovery::Found(path) => path,
@@ -617,6 +674,214 @@ impl LeagueClientReader for LocalLeagueClient {
     ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
         self.read_participant_recent_stats(player_puuid, limit)
     }
+
+    fn champ_select_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+        let champ_select =
+            match session.get_json::<LcuChampSelectSession>("/lol-champ-select/v1/session") {
+                Ok(value) => value,
+                Err(error) => {
+                    return self
+                        .read_live_client_session()
+                        .map_err(|_| read_error_from_request(error));
+                }
+            };
+
+        let mut champion_selections = HashMap::new();
+        let mut champion_selections_by_name = HashMap::new();
+        for member in champ_select
+            .my_team
+            .iter()
+            .chain(champ_select.their_team.iter())
+        {
+            if let (Some(sid), Some(cid)) = (member.summoner_id, member.champion_id) {
+                if cid > 0 {
+                    champion_selections.insert(sid, cid);
+                }
+            }
+            if let (Some(name), Some(cid)) = (member.display_name(), member.champion_id) {
+                if cid > 0 {
+                    champion_selections_by_name.insert(normalize_player_name(name.as_str()), cid);
+                }
+            }
+        }
+
+        Ok(ChampSelectSessionData {
+            ally_ids: champ_select
+                .my_team
+                .iter()
+                .filter_map(|member| member.summoner_id)
+                .filter(|id| *id > 0)
+                .collect(),
+            enemy_ids: champ_select
+                .their_team
+                .iter()
+                .filter_map(|member| member.summoner_id)
+                .filter(|id| *id > 0)
+                .collect(),
+            champion_selections,
+            ally_names: champ_select
+                .my_team
+                .iter()
+                .filter_map(LcuChampSelectMember::display_name)
+                .collect(),
+            enemy_names: champ_select
+                .their_team
+                .iter()
+                .filter_map(LcuChampSelectMember::display_name)
+                .collect(),
+            champion_selections_by_name,
+        })
+    }
+
+    fn summoners_by_ids(&self, ids: &[i64]) -> Vec<SummonerBatchEntry> {
+        if ids.is_empty() {
+            return Vec::new();
+        }
+
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(_) => return Vec::new(),
+        };
+        let ids_str = ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let ids_json = format!("[{ids_str}]");
+
+        for path in [
+            format!("/lol-summoner/v2/summoners?ids={ids_json}"),
+            format!("/lol-summoner/v1/summoners?ids={ids_json}"),
+            format!("/lol-summoner/v1/summoners?ids={ids_str}"),
+        ] {
+            if let Ok(summoners) = session.get_json::<Vec<LcuSummonerBatch>>(path.as_str()) {
+                let entries = map_summoner_batch_entries(summoners);
+                if !entries.is_empty() {
+                    return entries;
+                }
+            }
+        }
+
+        ids.iter()
+            .filter_map(|id| {
+                session
+                    .get_json::<LcuSummonerBatch>(
+                        format!("/lol-summoner/v1/summoners/{id}").as_str(),
+                    )
+                    .ok()
+            })
+            .filter_map(map_summoner_batch_entry)
+            .collect()
+    }
+
+    fn summoners_by_names(&self, names: &[String]) -> Vec<SummonerBatchEntry> {
+        if names.is_empty() {
+            return Vec::new();
+        }
+
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(_) => return Vec::new(),
+        };
+        let mut entries = Vec::new();
+        let mut seen_ids = HashSet::new();
+
+        for name in names {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let encoded_name = percent_encode_path_value(trimmed);
+            let mut found = None;
+
+            for path in [
+                format!("/lol-summoner/v1/summoners?name={encoded_name}"),
+                format!("/lol-summoner/v2/summoners?name={encoded_name}"),
+            ] {
+                if let Ok(summoner) = session.get_json::<LcuSummonerBatch>(path.as_str()) {
+                    found = map_summoner_batch_entry(summoner);
+                    if found.is_some() {
+                        break;
+                    }
+                }
+            }
+
+            if let Some(entry) = found {
+                if seen_ids.insert(entry.summoner_id) {
+                    entries.push(entry);
+                }
+            }
+        }
+
+        entries
+    }
+
+    fn champion_catalog(&self) -> Result<Vec<LeagueChampionSummary>, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+
+        session
+            .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
+            .map(map_champion_catalog)
+            .map_err(read_error_from_request)
+    }
+
+    fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+        let ready_check = session
+            .get_json::<LcuReadyCheck>("/lol-matchmaking/v1/ready-check")
+            .map_err(read_error_from_request)?;
+
+        if strings_match(ready_check.state.as_deref(), Some("InProgress"))
+            && !strings_match(ready_check.player_response.as_deref(), Some("Accepted"))
+        {
+            session
+                .post_empty("/lol-matchmaking/v1/ready-check/accept")
+                .map_err(read_error_from_request)?;
+        }
+
+        Ok(())
+    }
+
+    fn apply_champ_select_preferences(
+        &self,
+        pick_champion_id: Option<i64>,
+        ban_champion_id: Option<i64>,
+    ) -> Result<(), LeagueClientReadError> {
+        if pick_champion_id.is_none() && ban_champion_id.is_none() {
+            return Ok(());
+        }
+
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+        let champ_select = session
+            .get_json::<LcuChampSelectSession>("/lol-champ-select/v1/session")
+            .map_err(read_error_from_request)?;
+        let Some(local_cell_id) = champ_select.local_player_cell_id else {
+            return Ok(());
+        };
+
+        if let Some(champion_id) = ban_champion_id {
+            apply_champ_select_action(&session, &champ_select, local_cell_id, "ban", champion_id)?;
+        }
+
+        if let Some(champion_id) = pick_champion_id {
+            apply_champ_select_action(&session, &champ_select, local_cell_id, "pick", champion_id)?;
+        }
+
+        Ok(())
+    }
 }
 
 enum SessionOpenResult {
@@ -739,6 +1004,32 @@ impl LcuSession {
             .map_err(|_| LcuRequestError::Unexpected)
     }
 
+    fn post_empty(&self, path: &str) -> Result<(), LcuRequestError> {
+        let url = format!("https://{LOCAL_LCU_HOST}:{}{}", self.credentials.port, path);
+        let response = self
+            .http_client
+            .post(url)
+            .basic_auth("riot", Some(self.credentials.password.as_str()))
+            .send()
+            .map_err(|_| LcuRequestError::Unavailable)?;
+
+        validate_lcu_status(response.status())
+    }
+
+    fn patch_json<T: Serialize>(&self, path: &str, body: &T) -> Result<(), LcuRequestError> {
+        let url = format!("https://{LOCAL_LCU_HOST}:{}{}", self.credentials.port, path);
+        let response = self
+            .http_client
+            .patch(url)
+            .basic_auth("riot", Some(self.credentials.password.as_str()))
+            .header(CONTENT_TYPE, "application/json")
+            .json(body)
+            .send()
+            .map_err(|_| LcuRequestError::Unavailable)?;
+
+        validate_lcu_status(response.status())
+    }
+
     fn get_image_asset(
         &self,
         path: &str,
@@ -789,6 +1080,26 @@ impl LcuSession {
     }
 }
 
+fn live_client_get_json<T: for<'de> Deserialize<'de>>(
+    http_client: &Client,
+    path: &str,
+) -> Result<T, LeagueClientReadError> {
+    let url = format!("https://127.0.0.1:2999{path}");
+    let response = http_client.get(url).send().map_err(|_| {
+        LeagueClientReadError::ClientUnavailable("Live Client API is unavailable".to_string())
+    })?;
+
+    if !response.status().is_success() {
+        return Err(LeagueClientReadError::ClientUnavailable(
+            "Live Client API did not return active game data".to_string(),
+        ));
+    }
+
+    response.json::<T>().map_err(|_| {
+        LeagueClientReadError::Integration("Live Client API response could not be read".to_string())
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LcuRequestError {
     Unauthorized,
@@ -796,6 +1107,26 @@ enum LcuRequestError {
     Patching,
     Unavailable,
     Unexpected,
+}
+
+fn validate_lcu_status(status: StatusCode) -> Result<(), LcuRequestError> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(LcuRequestError::Unauthorized);
+    }
+
+    if status == StatusCode::NOT_FOUND {
+        return Err(LcuRequestError::NotLoggedIn);
+    }
+
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        return Err(LcuRequestError::Patching);
+    }
+
+    if !status.is_success() {
+        return Err(LcuRequestError::Unavailable);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1015,6 +1346,155 @@ struct LcuSummoner {
     puuid: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuChampSelectSession {
+    local_player_cell_id: Option<i64>,
+    #[serde(default)]
+    actions: Vec<Vec<LcuChampSelectAction>>,
+    #[serde(default)]
+    my_team: Vec<LcuChampSelectMember>,
+    #[serde(default)]
+    their_team: Vec<LcuChampSelectMember>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuChampSelectAction {
+    id: Option<i64>,
+    actor_cell_id: Option<i64>,
+    completed: Option<bool>,
+    is_ally_action: Option<bool>,
+    #[serde(rename = "type")]
+    action_type: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuChampSelectActionUpdate {
+    champion_id: i64,
+    completed: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuReadyCheck {
+    state: Option<String>,
+    player_response: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuChampSelectMember {
+    summoner_id: Option<i64>,
+    champion_id: Option<i64>,
+    summoner_name: Option<String>,
+    display_name: Option<String>,
+    game_name: Option<String>,
+    tag_line: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuSummonerBatch {
+    puuid: Option<String>,
+    summoner_id: Option<i64>,
+    display_name: Option<String>,
+    game_name: Option<String>,
+    tag_line: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+struct GameClientPlayer {
+    summoner_name: String,
+    team: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GameClientActivePlayer {
+    summoner_name: String,
+}
+
+impl LcuChampSelectMember {
+    fn display_name(&self) -> Option<String> {
+        match (
+            non_empty(self.game_name.as_deref()),
+            non_empty(self.tag_line.as_deref()),
+        ) {
+            (Some(game_name), Some(tag_line)) => Some(format!("{game_name}#{tag_line}")),
+            (Some(game_name), None) => Some(game_name.to_string()),
+            _ => non_empty(self.display_name.as_deref())
+                .or_else(|| non_empty(self.summoner_name.as_deref()))
+                .map(str::to_string),
+        }
+    }
+}
+
+fn apply_champ_select_action(
+    session: &LcuSession,
+    champ_select: &LcuChampSelectSession,
+    local_cell_id: i64,
+    action_type: &str,
+    champion_id: i64,
+) -> Result<(), LeagueClientReadError> {
+    let Some(action_id) = champ_select
+        .actions
+        .iter()
+        .flatten()
+        .find(|action| {
+            action.actor_cell_id == Some(local_cell_id)
+                && action.completed != Some(true)
+                && action
+                    .action_type
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(action_type))
+                && action.is_ally_action != Some(false)
+        })
+        .and_then(|action| action.id)
+    else {
+        return Ok(());
+    };
+
+    session
+        .patch_json(
+            format!("/lol-champ-select/v1/session/actions/{action_id}").as_str(),
+            &LcuChampSelectActionUpdate {
+                champion_id,
+                completed: true,
+            },
+        )
+        .map_err(read_error_from_request)
+}
+
+fn map_summoner_batch_entries(summoners: Vec<LcuSummonerBatch>) -> Vec<SummonerBatchEntry> {
+    summoners
+        .into_iter()
+        .filter_map(map_summoner_batch_entry)
+        .collect()
+}
+
+fn map_summoner_batch_entry(summoner: LcuSummonerBatch) -> Option<SummonerBatchEntry> {
+    let summoner_id = summoner.summoner_id?;
+    let puuid = summoner.puuid.filter(|value| !value.is_empty())?;
+    let display_name = match (
+        non_empty(summoner.game_name.as_deref()),
+        non_empty(summoner.tag_line.as_deref()),
+    ) {
+        (Some(name), Some(tag)) => format!("{name}#{tag}"),
+        (Some(name), None) => name.to_string(),
+        _ => non_empty(summoner.display_name.as_deref())?.to_string(),
+    };
+
+    Some(SummonerBatchEntry {
+        summoner_id,
+        puuid,
+        display_name,
+    })
+}
+
 impl LcuSummoner {
     fn profile(&self) -> CurrentSummonerProfile {
         CurrentSummonerProfile {
@@ -1099,6 +1579,17 @@ fn map_ranked_queues(stats: LcuRankedStats) -> Vec<RankedQueueSummary> {
 struct LcuChampionSummary {
     id: i64,
     name: String,
+}
+
+fn map_champion_catalog(champions: Vec<LcuChampionSummary>) -> Vec<LeagueChampionSummary> {
+    champions
+        .into_iter()
+        .filter(|champion| champion.id > 0 && !champion.name.trim().is_empty())
+        .map(|champion| LeagueChampionSummary {
+            champion_id: champion.id,
+            champion_name: champion.name.trim().to_string(),
+        })
+        .collect()
 }
 
 fn champion_name_map(champions: Vec<LcuChampionSummary>) -> HashMap<i64, String> {
@@ -1777,6 +2268,25 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
             Some(trimmed)
         }
     })
+}
+
+fn normalize_player_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn percent_encode_path_value(value: &str) -> String {
+    let mut encoded = String::new();
+
+    for byte in value.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            _ => encoded.push_str(format!("%{byte:02X}").as_str()),
+        }
+    }
+
+    encoded
 }
 
 fn non_empty_owned(value: String) -> Option<String> {

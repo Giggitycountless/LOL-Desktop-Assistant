@@ -1,9 +1,11 @@
 import { callBackend } from "./commands";
 import type {
+  ChampSelectSnapshot,
   ClearPlayerNoteInput,
   ClearPlayerNoteResult,
   LeagueGameAsset,
   LeagueGameAssetKind,
+  LeagueChampionSummary,
   LeagueClientStatus,
   LeagueImageAsset,
   LeagueSelfSnapshot,
@@ -22,9 +24,19 @@ export function fetchLeagueClientStatus(): Promise<LeagueClientStatus> {
   return callBackend<LeagueClientStatus>("get_league_client_status");
 }
 
+export function fetchLeagueChampionCatalog(): Promise<LeagueChampionSummary[]> {
+  return callBackend<LeagueChampionSummary[]>("get_league_champion_catalog");
+}
+
 export function fetchLeagueSelfSnapshot(input: LeagueSelfSnapshotInput = { matchLimit: 6 }): Promise<LeagueSelfSnapshot> {
   return callBackend<LeagueSelfSnapshot>("get_league_self_snapshot", {
     input,
+  });
+}
+
+export function fetchChampSelectSnapshot(recentLimit: number = 6): Promise<ChampSelectSnapshot> {
+  return callBackend<ChampSelectSnapshot>("get_champ_select_snapshot", {
+    input: { recentLimit },
   });
 }
 

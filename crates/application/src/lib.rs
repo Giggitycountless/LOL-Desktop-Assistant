@@ -8,11 +8,11 @@ use std::{
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
     ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult, KdaTag,
-    LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind,
-    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
-    MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
-    ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
-    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
+    LeagueChampionSummary, LeagueClientStatus, LeagueDataSection, LeagueDataWarning,
+    LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot,
+    LocalActivityEntry, LocalDataExport, MatchResult, NewActivityEntry, ParticipantMetricLeader,
+    ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView,
+    PostMatchComparison, PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
     RankedChampionDataSnapshot, RankedChampionDataStatus, RankedChampionLane, RankedChampionSort,
     RankedChampionStat, RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
     RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
@@ -299,9 +299,8 @@ pub trait AppStore {
     fn get_player_note(&self, player_puuid: &str) -> Result<Option<StoredPlayerNote>, String>;
     fn save_player_note(&self, note: StoredPlayerNoteInput) -> Result<StoredPlayerNote, String>;
     fn clear_player_note(&self, player_puuid: &str) -> Result<bool, String>;
-    fn latest_ranked_champion_snapshot(
-        &self,
-    ) -> Result<Option<RankedChampionDataSnapshot>, String>;
+    fn latest_ranked_champion_snapshot(&self)
+        -> Result<Option<RankedChampionDataSnapshot>, String>;
     fn replace_ranked_champion_snapshot(
         &self,
         snapshot: RankedChampionDataSnapshot,
@@ -325,6 +324,16 @@ pub trait LeagueClientReader {
         player_puuid: &str,
         limit: i64,
     ) -> Result<ParticipantRecentStats, LeagueClientReadError>;
+    fn champ_select_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError>;
+    fn summoners_by_ids(&self, ids: &[i64]) -> Vec<SummonerBatchEntry>;
+    fn summoners_by_names(&self, names: &[String]) -> Vec<SummonerBatchEntry>;
+    fn champion_catalog(&self) -> Result<Vec<LeagueChampionSummary>, LeagueClientReadError>;
+    fn accept_ready_check(&self) -> Result<(), LeagueClientReadError>;
+    fn apply_champ_select_preferences(
+        &self,
+        pick_champion_id: Option<i64>,
+        ban_champion_id: Option<i64>,
+    ) -> Result<(), LeagueClientReadError>;
 }
 
 pub trait RankedChampionDataProvider {
@@ -351,11 +360,33 @@ impl fmt::Display for LeagueClientReadError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ChampSelectSessionData {
+    pub ally_ids: Vec<i64>,
+    pub enemy_ids: Vec<i64>,
+    pub champion_selections: std::collections::HashMap<i64, i64>,
+    pub ally_names: Vec<String>,
+    pub enemy_names: Vec<String>,
+    pub champion_selections_by_name: std::collections::HashMap<String, i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SummonerBatchEntry {
+    pub summoner_id: i64,
+    pub puuid: String,
+    pub display_name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsInput {
     pub startup_page: String,
     pub compact_mode: bool,
     pub activity_limit: i64,
+    pub auto_accept_enabled: bool,
+    pub auto_pick_enabled: bool,
+    pub auto_pick_champion_id: Option<i64>,
+    pub auto_ban_enabled: bool,
+    pub auto_ban_champion_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,9 +431,7 @@ pub enum RankedChampionDataError {
 impl fmt::Display for RankedChampionDataError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unavailable(message) | Self::InvalidData(message) => {
-                formatter.write_str(message)
-            }
+            Self::Unavailable(message) | Self::InvalidData(message) => formatter.write_str(message),
         }
     }
 }
@@ -564,6 +593,11 @@ pub fn settings_defaults() -> SettingsValues {
         startup_page: StartupPage::Dashboard,
         compact_mode: false,
         activity_limit: DEFAULT_ACTIVITY_LIMIT,
+        auto_accept_enabled: true,
+        auto_pick_enabled: false,
+        auto_pick_champion_id: None,
+        auto_ban_enabled: false,
+        auto_ban_champion_id: None,
     }
 }
 
@@ -1313,6 +1347,11 @@ fn validate_settings(input: SettingsInput) -> Result<SettingsValues, Application
         startup_page,
         compact_mode: input.compact_mode,
         activity_limit: input.activity_limit,
+        auto_accept_enabled: input.auto_accept_enabled,
+        auto_pick_enabled: input.auto_pick_enabled,
+        auto_pick_champion_id: input.auto_pick_champion_id,
+        auto_ban_enabled: input.auto_ban_enabled,
+        auto_ban_champion_id: input.auto_ban_champion_id,
     };
 
     validate_settings_values(&values)?;
@@ -1321,6 +1360,32 @@ fn validate_settings(input: SettingsInput) -> Result<SettingsValues, Application
 
 fn validate_settings_values(settings: &SettingsValues) -> Result<(), ApplicationError> {
     normalize_activity_limit(settings.activity_limit)?;
+    validate_optional_champion_id(settings.auto_pick_champion_id, "Auto pick champion")?;
+    validate_optional_champion_id(settings.auto_ban_champion_id, "Auto ban champion")?;
+
+    if settings.auto_pick_enabled && settings.auto_pick_champion_id.is_none() {
+        return Err(ApplicationError::Validation(
+            "Auto pick requires a champion".to_string(),
+        ));
+    }
+
+    if settings.auto_ban_enabled && settings.auto_ban_champion_id.is_none() {
+        return Err(ApplicationError::Validation(
+            "Auto ban requires a champion".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_optional_champion_id(
+    champion_id: Option<i64>,
+    label: &str,
+) -> Result<(), ApplicationError> {
+    if let Some(champion_id) = champion_id {
+        normalize_league_asset_id(champion_id, label)?;
+    }
+
     Ok(())
 }
 
@@ -1677,6 +1742,196 @@ fn validate_local_activity_entry(entry: &LocalActivityEntry) -> Result<(), Appli
     Ok(())
 }
 
+pub fn get_champ_select_snapshot(
+    reader: &(impl LeagueClientReader + Sync),
+    recent_limit: i64,
+) -> Result<domain::ChampSelectSnapshot, ApplicationError> {
+    let session = reader.champ_select_session()?;
+    let mut all_ids: Vec<i64> = session
+        .ally_ids
+        .iter()
+        .chain(session.enemy_ids.iter())
+        .copied()
+        .collect();
+    all_ids.sort_unstable();
+    all_ids.dedup();
+    let summoners = reader.summoners_by_ids(&all_ids);
+    let summoners_by_id: std::collections::HashMap<i64, SummonerBatchEntry> = summoners
+        .into_iter()
+        .map(|summoner| (summoner.summoner_id, summoner))
+        .collect();
+    let all_names: Vec<String> = session
+        .ally_names
+        .iter()
+        .chain(session.enemy_names.iter())
+        .filter(|name| !name.trim().is_empty())
+        .cloned()
+        .collect();
+    let summoners_by_name: std::collections::HashMap<String, SummonerBatchEntry> = reader
+        .summoners_by_names(&all_names)
+        .into_iter()
+        .map(|summoner| {
+            (
+                normalize_player_name(summoner.display_name.as_str()),
+                summoner,
+            )
+        })
+        .collect();
+
+    let mut players = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
+
+    for summoner_id in all_ids {
+        let summoner = summoners_by_id.get(&summoner_id);
+        let team = if session.ally_ids.contains(&summoner_id) {
+            domain::ChampSelectTeam::Ally
+        } else {
+            domain::ChampSelectTeam::Enemy
+        };
+        let champion_id = session.champion_selections.get(&summoner_id).copied();
+        let puuid = summoner
+            .map(|value| value.puuid.clone())
+            .unwrap_or_default();
+        let display_name = summoner
+            .map(|value| value.display_name.clone())
+            .unwrap_or_else(|| format!("Summoner {summoner_id}"));
+        let recent_stats = if puuid.is_empty() {
+            None
+        } else {
+            reader.participant_recent_stats(&puuid, recent_limit).ok()
+        };
+
+        seen_ids.insert(summoner_id);
+        seen_names.insert(normalize_player_name(display_name.as_str()));
+        players.push(domain::ChampSelectPlayer {
+            summoner_id,
+            puuid,
+            display_name,
+            champion_id,
+            champion_name: None,
+            team,
+            ranked_queues: Vec::new(),
+            recent_stats,
+        });
+    }
+
+    for (name, team) in session
+        .ally_names
+        .iter()
+        .map(|name| (name, domain::ChampSelectTeam::Ally))
+        .chain(
+            session
+                .enemy_names
+                .iter()
+                .map(|name| (name, domain::ChampSelectTeam::Enemy)),
+        )
+    {
+        let normalized_name = normalize_player_name(name.as_str());
+        if normalized_name.is_empty() || seen_names.contains(&normalized_name) {
+            continue;
+        }
+
+        let summoner = summoners_by_name.get(&normalized_name);
+        if let Some(summoner) = summoner {
+            if seen_ids.contains(&summoner.summoner_id) {
+                continue;
+            }
+            seen_ids.insert(summoner.summoner_id);
+        }
+
+        let summoner_id = summoner
+            .map(|value| value.summoner_id)
+            .unwrap_or_else(|| negative_stable_id(name.as_str()));
+        let puuid = summoner
+            .map(|value| value.puuid.clone())
+            .unwrap_or_default();
+        let display_name = summoner
+            .map(|value| value.display_name.clone())
+            .unwrap_or_else(|| name.clone());
+        let champion_id = session
+            .champion_selections_by_name
+            .get(&normalized_name)
+            .copied();
+        let recent_stats = if puuid.is_empty() {
+            None
+        } else {
+            reader.participant_recent_stats(&puuid, recent_limit).ok()
+        };
+
+        seen_names.insert(normalized_name);
+        players.push(domain::ChampSelectPlayer {
+            summoner_id,
+            puuid,
+            display_name,
+            champion_id,
+            champion_name: None,
+            team,
+            ranked_queues: Vec::new(),
+            recent_stats,
+        });
+    }
+
+    Ok(domain::ChampSelectSnapshot {
+        players,
+        cached_at: unix_timestamp_seconds(),
+    })
+}
+
+pub fn get_league_champion_catalog(
+    reader: &impl LeagueClientReader,
+) -> Result<Vec<LeagueChampionSummary>, ApplicationError> {
+    let mut champions = reader.champion_catalog()?;
+    champions.sort_by(|left, right| {
+        left.champion_name
+            .to_ascii_lowercase()
+            .cmp(&right.champion_name.to_ascii_lowercase())
+            .then(left.champion_id.cmp(&right.champion_id))
+    });
+    Ok(champions)
+}
+
+pub fn run_lobby_automation(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+) -> Result<(), ApplicationError> {
+    let settings = store.get_settings().map_err(ApplicationError::Storage)?;
+
+    if settings.auto_accept_enabled {
+        let _ = reader.accept_ready_check();
+    }
+
+    let pick_champion_id = settings
+        .auto_pick_enabled
+        .then_some(settings.auto_pick_champion_id)
+        .flatten();
+    let ban_champion_id = settings
+        .auto_ban_enabled
+        .then_some(settings.auto_ban_champion_id)
+        .flatten();
+
+    if pick_champion_id.is_some() || ban_champion_id.is_some() {
+        let _ = reader.apply_champ_select_preferences(pick_champion_id, ban_champion_id);
+    }
+
+    Ok(())
+}
+
+fn normalize_player_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn negative_stable_id(value: &str) -> i64 {
+    use std::{
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    -((hasher.finish() & 0x3fff_ffff_ffff) as i64) - 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1696,6 +1951,11 @@ mod tests {
                 startup_page: "dashboard".to_string(),
                 compact_mode: false,
                 activity_limit: 100,
+                auto_accept_enabled: true,
+                auto_pick_enabled: false,
+                auto_pick_champion_id: None,
+                auto_ban_enabled: false,
+                auto_ban_champion_id: None,
             },
         )
         .expect("settings save succeeds");
@@ -1714,6 +1974,11 @@ mod tests {
                 startup_page: "activity".to_string(),
                 compact_mode: true,
                 activity_limit: 50,
+                auto_accept_enabled: false,
+                auto_pick_enabled: true,
+                auto_pick_champion_id: Some(103),
+                auto_ban_enabled: true,
+                auto_ban_champion_id: Some(122),
             },
         )
         .expect("settings save succeeds");
@@ -2324,6 +2589,11 @@ mod tests {
                 startup_page: settings.startup_page,
                 compact_mode: settings.compact_mode,
                 activity_limit: settings.activity_limit,
+                auto_accept_enabled: settings.auto_accept_enabled,
+                auto_pick_enabled: settings.auto_pick_enabled,
+                auto_pick_champion_id: settings.auto_pick_champion_id,
+                auto_ban_enabled: settings.auto_ban_enabled,
+                auto_ban_champion_id: settings.auto_ban_champion_id,
                 updated_at: "2026-04-18 00:00:00".to_string(),
             };
 
@@ -2476,6 +2746,11 @@ mod tests {
             startup_page: StartupPage::Dashboard,
             compact_mode: false,
             activity_limit: 100,
+            auto_accept_enabled: true,
+            auto_pick_enabled: false,
+            auto_pick_champion_id: None,
+            auto_ban_enabled: false,
+            auto_ban_champion_id: None,
             updated_at: "2026-04-18 00:00:00".to_string(),
         }
     }
@@ -2663,6 +2938,44 @@ mod tests {
                 recent_champions: vec!["Ahri".to_string()],
                 recent_matches,
             })
+        }
+
+        fn champ_select_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError> {
+            Ok(ChampSelectSessionData {
+                ally_ids: Vec::new(),
+                enemy_ids: Vec::new(),
+                champion_selections: std::collections::HashMap::new(),
+                ally_names: Vec::new(),
+                enemy_names: Vec::new(),
+                champion_selections_by_name: std::collections::HashMap::new(),
+            })
+        }
+
+        fn summoners_by_ids(&self, _ids: &[i64]) -> Vec<SummonerBatchEntry> {
+            Vec::new()
+        }
+
+        fn summoners_by_names(&self, _names: &[String]) -> Vec<SummonerBatchEntry> {
+            Vec::new()
+        }
+
+        fn champion_catalog(&self) -> Result<Vec<LeagueChampionSummary>, LeagueClientReadError> {
+            Ok(vec![LeagueChampionSummary {
+                champion_id: 103,
+                champion_name: "Ahri".to_string(),
+            }])
+        }
+
+        fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
+            Ok(())
+        }
+
+        fn apply_champ_select_preferences(
+            &self,
+            _pick_champion_id: Option<i64>,
+            _ban_champion_id: Option<i64>,
+        ) -> Result<(), LeagueClientReadError> {
+            Ok(())
         }
     }
 

@@ -83,11 +83,26 @@ fn get_league_client_status(
 }
 
 #[tauri::command]
+fn get_league_champion_catalog(
+    state: State<'_, platform::AppState>,
+) -> Result<Vec<domain::LeagueChampionSummary>, platform::CommandError> {
+    platform::get_league_champion_catalog(state.inner())
+}
+
+#[tauri::command]
 fn get_league_self_snapshot(
     state: State<'_, platform::AppState>,
     input: platform::LeagueSelfSnapshotCommand,
 ) -> Result<domain::LeagueSelfSnapshot, platform::CommandError> {
     platform::get_league_self_snapshot(state.inner(), input)
+}
+
+#[tauri::command]
+fn get_champ_select_snapshot(
+    state: State<'_, platform::AppState>,
+    input: platform::ChampSelectSnapshotCommand,
+) -> Result<domain::ChampSelectSnapshot, platform::CommandError> {
+    platform::get_champ_select_snapshot(state.inner(), input)
 }
 
 #[tauri::command]
@@ -191,7 +206,17 @@ fn main() {
                 })
                 .build(),
         )
-        .setup(|app| platform::setup_app(app))
+        .setup(|app| {
+            platform::setup_app(app)?;
+
+            let state = app.state::<platform::AppState>().inner().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let _ = platform::run_lobby_automation(&state);
+            });
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             healthcheck,
             get_app_state,
@@ -204,7 +229,9 @@ fn main() {
             import_local_data,
             clear_activity_entries,
             get_league_client_status,
+            get_league_champion_catalog,
             get_league_self_snapshot,
+            get_champ_select_snapshot,
             get_ranked_champion_stats,
             refresh_ranked_champion_stats,
             get_league_profile_icon,

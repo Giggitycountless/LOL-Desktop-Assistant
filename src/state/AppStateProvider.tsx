@@ -5,6 +5,7 @@ import { isCommandError } from "../backend/commands";
 import { exportLocalData, importLocalData } from "../backend/dataTools";
 import {
   clearPlayerNote as clearPlayerNoteCommand,
+  fetchChampSelectSnapshot,
   fetchLeagueChampionIcon,
   fetchLeagueGameAsset,
   fetchLeagueProfileIcon,
@@ -22,6 +23,7 @@ import type {
   ActivityListInput,
   ActivityNoteInput,
   AppSnapshot,
+  ChampSelectSnapshot,
   Feedback,
   LeagueGameAsset,
   LeagueGameAssetKind,
@@ -53,6 +55,7 @@ type AppStateContextValue = {
   snapshot: AppSnapshot | null;
   activityEntries: ActivityEntry[];
   leagueSelfSnapshot: LeagueSelfSnapshot | null;
+  champSelectSnapshot: ChampSelectSnapshot | null;
   rankedChampionStats: RankedChampionStatsResponse | null;
   postMatchDetails: Record<number, PostMatchDetail>;
   participantProfiles: Record<string, ParticipantPublicProfile>;
@@ -88,11 +91,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [leagueSelfSnapshot, setLeagueSelfSnapshot] = useState<LeagueSelfSnapshot | null>(null);
+  const [champSelectSnapshot, setChampSelectSnapshot] = useState<ChampSelectSnapshot | null>(null);
   const [rankedChampionStats, setRankedChampionStats] = useState<RankedChampionStatsResponse | null>(null);
   const [postMatchDetails, setPostMatchDetails] = useState<Record<number, PostMatchDetail>>({});
   const [participantProfiles, setParticipantProfiles] = useState<Record<string, ParticipantPublicProfile>>({});
   const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {}, gameAssets: {} });
   const pendingImageKeysRef = useRef(new Set<string>());
+  const champSelectFingerprintRef = useRef("");
   const [leagueImages, setLeagueImages] = useState<LeagueImageUrls>(imageUrlsRef.current);
   const [isLoading, setIsLoading] = useState(true);
   const [isActivityLoading, setIsActivityLoading] = useState(false);
@@ -335,6 +340,51 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+    let isRefreshing = false;
+
+    async function refreshChampSelectSnapshot() {
+      if (isRefreshing) {
+        return;
+      }
+
+      isRefreshing = true;
+      try {
+        const snapshot = await fetchChampSelectSnapshot(6);
+        if (!isMounted) {
+          return;
+        }
+        const nextFingerprint = champSelectFingerprint(snapshot);
+        if (champSelectFingerprintRef.current === nextFingerprint) {
+          return;
+        }
+        champSelectFingerprintRef.current = nextFingerprint;
+        setChampSelectSnapshot(snapshot);
+        for (const player of snapshot.players) {
+          void loadLeagueChampionIconAction(player.championId);
+        }
+      } catch {
+        if (isMounted && champSelectFingerprintRef.current) {
+          champSelectFingerprintRef.current = "";
+          setChampSelectSnapshot(null);
+        }
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
+    void refreshChampSelectSnapshot();
+    const intervalId = window.setInterval(() => {
+      void refreshChampSelectSnapshot();
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, [loadLeagueChampionIconAction]);
+
   const loadLeagueGameAssetAction = useCallback(async (kind: LeagueGameAssetKind, assetId: number | null | undefined) => {
     if (!assetId) {
       return true;
@@ -424,6 +474,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       snapshot,
       activityEntries,
       leagueSelfSnapshot,
+      champSelectSnapshot,
       rankedChampionStats,
       postMatchDetails,
       participantProfiles,
@@ -454,6 +505,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }),
     [
       activityEntries,
+      champSelectSnapshot,
       clearActivityEntriesAction,
       clearPlayerNoteAction,
       createActivityNoteAction,
@@ -516,4 +568,20 @@ function participantProfileKey(gameId: number, participantId: number) {
 
 export function leagueGameAssetKey(kind: LeagueGameAssetKind, assetId: number) {
   return `${kind}:${assetId}`;
+}
+
+function champSelectFingerprint(snapshot: ChampSelectSnapshot) {
+  return snapshot.players
+    .map((player) => {
+      const recentMatchIds = player.recentStats?.recentMatches.map((match) => match.gameId).join(",") ?? "";
+      return [
+        player.summonerId,
+        player.puuid,
+        player.displayName,
+        player.championId ?? "",
+        player.team,
+        recentMatchIds,
+      ].join(":");
+    })
+    .join("|");
 }
