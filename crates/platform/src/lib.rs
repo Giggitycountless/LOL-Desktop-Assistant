@@ -3,8 +3,8 @@ use std::{
     error::Error,
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard,
     },
     thread,
     time::{Duration, Instant},
@@ -33,18 +33,8 @@ use storage::SqliteStore;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
 
-const DEFAULT_RANKED_CHAMPION_DATA_URL: &str = "https://raw.githubusercontent.com/Giggitycountless/LOL-Desktop-Assistant/main/data/ranked-champions/latest.json";
-const CHAMP_SELECT_CACHE_TTL: Duration = Duration::from_secs(8);
-const RECENT_STATS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-const RECENT_STATS_FAILURE_CACHE_TTL: Duration = Duration::from_secs(30);
-const SUMMONER_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-const SUMMONER_FAILURE_CACHE_TTL: Duration = Duration::from_secs(30);
-const CHAMP_SELECT_LIGHT_RECENT_LIMIT: i64 = 0;
-const CHAMP_SELECT_HYDRATED_RECENT_LIMIT: i64 = 6;
-const CHAMP_SELECT_HYDRATION_DEBOUNCE: Duration = Duration::from_millis(250);
-const LEAGUE_EVENT_FALLBACK_POLL: Duration = Duration::from_secs(30);
-const GAMEFLOW_PHASE_URI: &str = "/lol-gameflow/v1/gameflow-phase";
-const CHAMP_SELECT_SESSION_URI: &str = "/lol-champ-select/v1/session";
+mod constants;
+use constants::*;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,6 +74,23 @@ pub struct LeagueEventServiceState {
     fingerprint: String,
 }
 
+#[derive(Debug, Default)]
+struct CacheMetrics {
+    champ_select_cache_hits: AtomicU64,
+    champ_select_cache_misses: AtomicU64,
+    recent_stats_cache_hits: AtomicU64,
+    recent_stats_cache_misses: AtomicU64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheMetricsSnapshot {
+    pub champ_select_cache_hits: u64,
+    pub champ_select_cache_misses: u64,
+    pub recent_stats_cache_hits: u64,
+    pub recent_stats_cache_misses: u64,
+}
+
 #[derive(Debug)]
 pub struct AppState {
     store: SqliteStore,
@@ -96,6 +103,14 @@ pub struct AppState {
     pub league_event_service_started: Arc<AtomicBool>,
     pub champ_select_hydration: Arc<Mutex<Option<ChampSelectHydrationState>>>,
     pub league_phase: Arc<Mutex<Option<String>>>,
+    cache_metrics: Arc<CacheMetrics>,
+}
+
+fn lock_or_recover<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 impl AppState {
@@ -113,6 +128,7 @@ impl AppState {
             league_event_service_started: Arc::new(AtomicBool::new(false)),
             champ_select_hydration: Arc::new(Mutex::new(None)),
             league_phase: Arc::new(Mutex::new(None)),
+            cache_metrics: Arc::new(CacheMetrics::default()),
         })
     }
 }
@@ -123,13 +139,14 @@ impl Clone for AppState {
             store: self.store.clone(),
             league_client: self.league_client.clone(),
             ranked_champion_provider: self.ranked_champion_provider.clone(),
-            champ_select_cache: Mutex::new(self.champ_select_cache.lock().unwrap().clone()),
-            recent_stats_cache: Mutex::new(self.recent_stats_cache.lock().unwrap().clone()),
-            summoner_id_cache: Mutex::new(self.summoner_id_cache.lock().unwrap().clone()),
-            summoner_name_cache: Mutex::new(self.summoner_name_cache.lock().unwrap().clone()),
+            champ_select_cache: Mutex::new(lock_or_recover(&self.champ_select_cache).clone()),
+            recent_stats_cache: Mutex::new(lock_or_recover(&self.recent_stats_cache).clone()),
+            summoner_id_cache: Mutex::new(lock_or_recover(&self.summoner_id_cache).clone()),
+            summoner_name_cache: Mutex::new(lock_or_recover(&self.summoner_name_cache).clone()),
             league_event_service_started: Arc::clone(&self.league_event_service_started),
             champ_select_hydration: Arc::clone(&self.champ_select_hydration),
             league_phase: Arc::clone(&self.league_phase),
+            cache_metrics: Arc::clone(&self.cache_metrics),
         }
     }
 }
@@ -139,6 +156,7 @@ struct CachedLeagueClientReader<'a> {
     recent_stats_cache: &'a Mutex<HashMap<String, RecentStatsCacheEntry>>,
     summoner_id_cache: &'a Mutex<HashMap<i64, SummonerCacheEntry>>,
     summoner_name_cache: &'a Mutex<HashMap<String, SummonerCacheEntry>>,
+    cache_metrics: &'a Arc<CacheMetrics>,
 }
 
 impl LeagueClientReader for CachedLeagueClientReader<'_> {
@@ -189,16 +207,22 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         if let Some(result) = self
             .recent_stats_cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(cache_key.as_str())
             .filter(|entry| recent_stats_cache_is_fresh(entry))
             .map(|entry| entry.result.clone())
         {
+            self.cache_metrics
+                .recent_stats_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
             return result;
         }
 
         let result = self.inner.participant_recent_stats(player_puuid, limit);
-        self.recent_stats_cache.lock().unwrap().insert(
+        self.cache_metrics
+            .recent_stats_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+        lock_or_recover(self.recent_stats_cache).insert(
             cache_key,
             RecentStatsCacheEntry {
                 result: result.clone(),
@@ -218,7 +242,8 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         let mut missing_puuids = Vec::new();
 
         {
-            let cache = self.recent_stats_cache.lock().unwrap();
+            let mut has_cache_hit = false;
+            let cache = lock_or_recover(self.recent_stats_cache);
             for player_puuid in player_puuids {
                 let cache_key = recent_stats_cache_key(player_puuid, limit);
                 match cache
@@ -226,21 +251,30 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
                     .filter(|entry| recent_stats_cache_is_fresh(entry))
                 {
                     Some(entry) => {
+                        has_cache_hit = true;
                         results.insert(player_puuid.clone(), entry.result.clone());
                     }
                     None => missing_puuids.push(player_puuid.clone()),
                 }
+            }
+            if has_cache_hit {
+                self.cache_metrics
+                    .recent_stats_cache_hits
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
 
         if missing_puuids.is_empty() {
             return results;
         }
+        self.cache_metrics
+            .recent_stats_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
 
         let fetched = self
             .inner
             .participant_recent_stats_batch(&missing_puuids, limit);
-        let mut cache = self.recent_stats_cache.lock().unwrap();
+        let mut cache = lock_or_recover(self.recent_stats_cache);
         for player_puuid in missing_puuids {
             if let Some(result) = fetched.get(player_puuid.as_str()).cloned() {
                 cache.insert(
@@ -268,7 +302,7 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         let mut missing_ids = Vec::new();
 
         {
-            let cache = self.summoner_id_cache.lock().unwrap();
+            let cache = lock_or_recover(self.summoner_id_cache);
             for id in ids {
                 match cache.get(id).filter(|entry| summoner_cache_is_fresh(entry)) {
                     Some(entry) => {
@@ -293,8 +327,8 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
             .collect();
 
         {
-            let mut cache = self.summoner_id_cache.lock().unwrap();
-            let mut name_cache = self.summoner_name_cache.lock().unwrap();
+            let mut cache = lock_or_recover(self.summoner_id_cache);
+            let mut name_cache = lock_or_recover(self.summoner_name_cache);
             for id in missing_ids {
                 let entry = fetched_by_id.get(&id).cloned();
                 if let Some(summoner) = &entry {
@@ -325,7 +359,7 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         let mut missing_names = Vec::new();
 
         {
-            let cache = self.summoner_name_cache.lock().unwrap();
+            let cache = lock_or_recover(self.summoner_name_cache);
             for name in names {
                 let normalized_name = normalize_player_name(name.as_str());
                 if normalized_name.is_empty() {
@@ -358,8 +392,8 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
             .collect();
 
         {
-            let mut name_cache = self.summoner_name_cache.lock().unwrap();
-            let mut id_cache = self.summoner_id_cache.lock().unwrap();
+            let mut name_cache = lock_or_recover(self.summoner_name_cache);
+            let mut id_cache = lock_or_recover(self.summoner_id_cache);
             for name in missing_names {
                 let normalized_name = normalize_player_name(name.as_str());
                 let entry = fetched_by_name.get(normalized_name.as_str()).cloned();
@@ -647,7 +681,7 @@ where
         if result.is_err()
             && !run_league_event_http_fallback(&app_handle, &state, &mut service_state)
         {
-            *state.champ_select_cache.lock().unwrap() = None;
+            *lock_or_recover(&state.champ_select_cache) = None;
             let _ = app_handle.emit("champ-select-clear", ());
         }
 
@@ -711,7 +745,7 @@ where
         }
         CHAMP_SELECT_SESSION_URI => {
             if service_state.phase.as_deref() != Some("ChampSelect")
-                && state.league_phase.lock().unwrap().as_deref() != Some("ChampSelect")
+                && lock_or_recover(state.league_phase.as_ref()).as_deref() != Some("ChampSelect")
             {
                 return false;
             }
@@ -777,7 +811,7 @@ fn handle_league_phase_change<R: Runtime + 'static>(
         }
         "GameStart" | "PreEndOfGame" | "None" => {
             cancel_champ_select_hydration(state);
-            *state.champ_select_cache.lock().unwrap() = None;
+            *lock_or_recover(&state.champ_select_cache) = None;
             let _ = app_handle.emit("champ-select-clear", ());
         }
         _ => {}
@@ -795,11 +829,11 @@ fn emit_automation_feedback<R: Runtime>(app_handle: &AppHandle<R>, message: Stri
 }
 
 fn set_league_phase(state: &AppState, phase: Option<String>) {
-    *state.league_phase.lock().unwrap() = phase;
+    *lock_or_recover(state.league_phase.as_ref()) = phase;
 }
 
 fn current_league_phase_is(state: &AppState, phase: &str) -> bool {
-    state.league_phase.lock().unwrap().as_deref() == Some(phase)
+    lock_or_recover(state.league_phase.as_ref()).as_deref() == Some(phase)
 }
 
 fn refresh_champ_select_from_event<R: Runtime + 'static>(
@@ -811,7 +845,7 @@ where
 {
     let mut snapshot = build_champ_select_snapshot(state, CHAMP_SELECT_LIGHT_RECENT_LIMIT).ok()?;
     let roster_fingerprint = champ_select_roster_fingerprint(&snapshot);
-    let cached_entry = state.champ_select_cache.lock().unwrap().as_ref().cloned();
+    let cached_entry = lock_or_recover(&state.champ_select_cache).as_ref().cloned();
     let cached_snapshot = cached_entry.as_ref().map(|entry| entry.snapshot.clone());
     let cached_roster_fingerprint = cached_snapshot
         .as_ref()
@@ -843,7 +877,7 @@ where
         return Some(fingerprint);
     }
 
-    *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+    *lock_or_recover(&state.champ_select_cache) = Some(ChampSelectCacheEntry {
         snapshot: snapshot.clone(),
         cached_at: Instant::now(),
         recent_limit: if cached_roster_fingerprint.as_deref() == Some(roster_fingerprint.as_str()) {
@@ -878,7 +912,7 @@ fn start_champ_select_hydration<R: Runtime + 'static>(
 {
     let token = CancellationToken::new();
     {
-        let mut hydration = state.champ_select_hydration.lock().unwrap();
+        let mut hydration = lock_or_recover(state.champ_select_hydration.as_ref());
         if hydration
             .as_ref()
             .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled())
@@ -919,19 +953,19 @@ fn start_champ_select_hydration<R: Runtime + 'static>(
         let current_is_same = state
             .champ_select_hydration
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled());
         if !current_is_same {
             return;
         }
 
-        *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+        *lock_or_recover(&state.champ_select_cache) = Some(ChampSelectCacheEntry {
             snapshot: snapshot.clone(),
             cached_at: Instant::now(),
             recent_limit: CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
         });
-        let mut hydration = state.champ_select_hydration.lock().unwrap();
+        let mut hydration = lock_or_recover(state.champ_select_hydration.as_ref());
         if hydration
             .as_ref()
             .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled())
@@ -944,13 +978,13 @@ fn start_champ_select_hydration<R: Runtime + 'static>(
 }
 
 fn cancel_champ_select_hydration(state: &AppState) {
-    if let Some(entry) = state.champ_select_hydration.lock().unwrap().take() {
+    if let Some(entry) = lock_or_recover(state.champ_select_hydration.as_ref()).take() {
         entry.token.cancel();
     }
 }
 
 fn clear_champ_select_hydration_if_current(state: &AppState, fingerprint: &str) {
-    let mut hydration = state.champ_select_hydration.lock().unwrap();
+    let mut hydration = lock_or_recover(state.champ_select_hydration.as_ref());
     if hydration
         .as_ref()
         .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled())
@@ -1182,18 +1216,26 @@ pub fn get_champ_select_snapshot(
     if let Some(snapshot) = state
         .champ_select_cache
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
         .filter(|entry| {
             entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL && entry.recent_limit >= recent_limit
         })
         .map(|entry| entry.snapshot.clone())
     {
+        state
+            .cache_metrics
+            .champ_select_cache_hits
+            .fetch_add(1, Ordering::Relaxed);
         return Ok(snapshot);
     }
 
+    state
+        .cache_metrics
+        .champ_select_cache_misses
+        .fetch_add(1, Ordering::Relaxed);
     let snapshot = build_champ_select_snapshot(state, recent_limit)?;
-    *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+    *lock_or_recover(&state.champ_select_cache) = Some(ChampSelectCacheEntry {
         snapshot: snapshot.clone(),
         cached_at: Instant::now(),
         recent_limit,
@@ -1211,9 +1253,31 @@ fn build_champ_select_snapshot(
         recent_stats_cache: &state.recent_stats_cache,
         summoner_id_cache: &state.summoner_id_cache,
         summoner_name_cache: &state.summoner_name_cache,
+        cache_metrics: &state.cache_metrics,
     };
 
     application::get_champ_select_snapshot(&cached_reader, recent_limit).map_err(CommandError::from)
+}
+
+pub fn cache_metrics_snapshot(state: &AppState) -> CacheMetricsSnapshot {
+    CacheMetricsSnapshot {
+        champ_select_cache_hits: state
+            .cache_metrics
+            .champ_select_cache_hits
+            .load(Ordering::Relaxed),
+        champ_select_cache_misses: state
+            .cache_metrics
+            .champ_select_cache_misses
+            .load(Ordering::Relaxed),
+        recent_stats_cache_hits: state
+            .cache_metrics
+            .recent_stats_cache_hits
+            .load(Ordering::Relaxed),
+        recent_stats_cache_misses: state
+            .cache_metrics
+            .recent_stats_cache_misses
+            .load(Ordering::Relaxed),
+    }
 }
 
 pub fn get_ranked_champion_stats(

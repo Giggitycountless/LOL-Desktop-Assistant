@@ -4,7 +4,6 @@ use std::{
     path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
-    time::Duration,
 };
 
 use application::{
@@ -31,15 +30,8 @@ use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream,
 };
 
-const LOCAL_LCU_HOST: &str = "127.0.0.1";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-const LEAGUE_CLIENT_PROCESSES: [&str; 2] = ["LeagueClientUx.exe", "LeagueClient.exe"];
-const PROFILE_ICON_MIME: &str = "image/jpeg";
-const CHAMPION_ICON_MIME: &str = "image/png";
-const GAME_ASSET_MIME: &str = "image/png";
-const MAX_COMPLETED_MATCH_SCAN: i64 = 20;
-const RANKED_CHAMPION_REMOTE_TIMEOUT: Duration = Duration::from_secs(5);
-const RANKED_CHAMPION_FORMAT_VERSION: i64 = 1;
+mod constants;
+use constants::*;
 
 pub fn layer_name() -> &'static str {
     "adapters"
@@ -87,9 +79,9 @@ impl RankedChampionDataProvider for RemoteRankedChampionJsonProvider {
             ));
         }
 
-        let response = self.http_client.get(url).send().map_err(|_| {
+        let response = self.http_client.get(url).send().map_err(|error| {
             RankedChampionDataError::Unavailable(
-                "Ranked champion data could not be downloaded".to_string(),
+                format!("Ranked champion data could not be downloaded: {error}"),
             )
         })?;
 
@@ -100,9 +92,9 @@ impl RankedChampionDataProvider for RemoteRankedChampionJsonProvider {
             )));
         }
 
-        let body = response.text().map_err(|_| {
+        let body = response.text().map_err(|error| {
             RankedChampionDataError::Unavailable(
-                "Ranked champion data response could not be read".to_string(),
+                format!("Ranked champion data response could not be read: {error}"),
             )
         })?;
 
@@ -286,11 +278,14 @@ fn ranked_overall_score(win_rate: f64, pick_rate: f64, ban_rate: f64) -> f64 {
 }
 
 fn ranked_champion_http_client() -> Client {
-    Client::builder()
+    match Client::builder()
         .timeout(RANKED_CHAMPION_REMOTE_TIMEOUT)
         .connect_timeout(RANKED_CHAMPION_REMOTE_TIMEOUT)
         .build()
-        .expect("ranked champion HTTP client builds")
+    {
+        Ok(client) => client,
+        Err(_) => Client::new(),
+    }
 }
 
 fn optional_non_empty(value: Option<String>) -> Option<String> {

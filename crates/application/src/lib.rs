@@ -20,29 +20,8 @@ use domain::{
     RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
-const LOCAL_DATA_FORMAT_VERSION: i64 = 1;
-const MIN_ACTIVITY_LIMIT: i64 = 1;
-const MAX_ACTIVITY_LIMIT: i64 = 500;
-const DEFAULT_ACTIVITY_LIMIT: i64 = 100;
-const MAX_ACTIVITY_TITLE_LEN: usize = 120;
-const MAX_ACTIVITY_BODY_LEN: usize = 4_000;
-const DEFAULT_MATCH_LIMIT: i64 = 6;
-const MAX_MATCH_LIMIT: i64 = 20;
-const DEFAULT_PUBLIC_RECENT_LIMIT: i64 = 6;
-const PERFORMANCE_MATCH_COUNT: usize = 6;
-const HIGH_KDA_THRESHOLD: f64 = 9.0;
-const MAX_LEAGUE_ASSET_ID: i64 = 1_000_000;
-const MAX_PLAYER_NOTE_LEN: usize = 1_000;
-const MAX_PLAYER_TAGS: usize = 8;
-const MAX_PLAYER_TAG_LEN: usize = 24;
-const SCORE_KDA_WEIGHT: f64 = 0.22;
-const SCORE_KILL_PARTICIPATION_WEIGHT: f64 = 0.18;
-const SCORE_DAMAGE_WEIGHT: f64 = 0.20;
-const SCORE_GOLD_WEIGHT: f64 = 0.12;
-const SCORE_CS_WEIGHT: f64 = 0.10;
-const SCORE_VISION_WEIGHT: f64 = 0.10;
-const SCORE_RESULT_WEIGHT: f64 = 0.08;
-const READY_CHECK_AUTOMATION_RETRY_DELAYS_MS: &[u64] = &[250, 600, 1_200];
+mod constants;
+use constants::*;
 
 struct RankedChampionSeed {
     champion_id: i64,
@@ -594,6 +573,10 @@ impl fmt::Display for ApplicationError {
 
 impl Error for ApplicationError {}
 
+fn storage_failure(operation: &'static str, error: String) -> ApplicationError {
+    ApplicationError::Storage(format!("{operation} failed: {error}"))
+}
+
 impl From<LeagueClientReadError> for ApplicationError {
     fn from(error: LeagueClientReadError) -> Self {
         match error {
@@ -632,7 +615,9 @@ pub fn settings_defaults() -> SettingsValues {
 }
 
 pub fn app_snapshot(store: &impl AppStore) -> Result<AppSnapshot, ApplicationError> {
-    let schema_version = store.schema_version().map_err(ApplicationError::Storage)?;
+    let schema_version = store
+        .schema_version()
+        .map_err(|error| storage_failure("read schema version", error))?;
     let settings = get_settings(store)?;
     let recent_activity = list_activity_entries(
         store,
@@ -652,7 +637,9 @@ pub fn app_snapshot(store: &impl AppStore) -> Result<AppSnapshot, ApplicationErr
 }
 
 pub fn get_settings(store: &impl AppStore) -> Result<AppSettings, ApplicationError> {
-    store.get_settings().map_err(ApplicationError::Storage)
+    store
+        .get_settings()
+        .map_err(|error| storage_failure("load settings", error))
 }
 
 pub fn save_settings(
@@ -660,7 +647,9 @@ pub fn save_settings(
     input: SettingsInput,
 ) -> Result<AppSettings, ApplicationError> {
     let next_settings = validate_settings(input)?;
-    let current_settings = store.get_settings().map_err(ApplicationError::Storage)?;
+    let current_settings = store
+        .get_settings()
+        .map_err(|error| storage_failure("load current settings", error))?;
 
     if current_settings.values() == next_settings {
         return Ok(current_settings);
@@ -668,7 +657,7 @@ pub fn save_settings(
 
     let saved_settings = store
         .save_settings(next_settings)
-        .map_err(ApplicationError::Storage)?;
+        .map_err(|error| storage_failure("save settings", error))?;
 
     store
         .create_activity_entry(NewActivityEntry {
@@ -676,7 +665,7 @@ pub fn save_settings(
             title: "Settings updated".to_string(),
             body: Some("Application preferences changed".to_string()),
         })
-        .map_err(ApplicationError::Storage)?;
+        .map_err(|error| storage_failure("create settings activity entry", error))?;
 
     Ok(saved_settings)
 }
@@ -688,7 +677,7 @@ pub fn list_activity_entries(
     let limit = normalize_activity_limit(input.limit.unwrap_or(DEFAULT_ACTIVITY_LIMIT))?;
     let records = store
         .list_activity_entries(limit, input.kind)
-        .map_err(ApplicationError::Storage)?;
+        .map_err(|error| storage_failure("list activity entries", error))?;
 
     Ok(ActivityEntries { records })
 }
@@ -701,17 +690,17 @@ pub fn create_activity_note(
 
     store
         .create_activity_entry(entry)
-        .map_err(ApplicationError::Storage)
+        .map_err(|error| storage_failure("create activity note", error))
 }
 
 pub fn export_local_data(store: &impl AppStore) -> Result<LocalDataExport, ApplicationError> {
     let settings = store
         .get_settings()
-        .map_err(ApplicationError::Storage)?
+        .map_err(|error| storage_failure("load settings for export", error))?
         .values();
     let activity_entries = store
         .list_all_activity_entries()
-        .map_err(ApplicationError::Storage)?
+        .map_err(|error| storage_failure("list activity entries for export", error))?
         .into_iter()
         .map(|entry| LocalActivityEntry {
             kind: entry.kind,
@@ -750,7 +739,7 @@ pub fn import_local_data(
 
     store
         .import_local_data(data.settings, data.activity_entries)
-        .map_err(ApplicationError::Storage)
+        .map_err(|error| storage_failure("import local data", error))
 }
 
 pub fn clear_activity_entries(
@@ -765,7 +754,7 @@ pub fn clear_activity_entries(
 
     let deleted_count = store
         .clear_activity_entries()
-        .map_err(ApplicationError::Storage)?;
+        .map_err(|error| storage_failure("clear activity entries", error))?;
 
     Ok(ClearActivityResult { deleted_count })
 }
