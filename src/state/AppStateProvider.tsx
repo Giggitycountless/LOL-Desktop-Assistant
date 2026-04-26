@@ -123,6 +123,8 @@ const AppStateContext = createContext<AppStateContextValue | null>(null);
 const AppCoreContext = createContext<AppCoreContextValue | null>(null);
 const LeagueAssetsContext = createContext<LeagueAssetsContextValue | null>(null);
 const ChampSelectContext = createContext<ChampSelectContextValue | null>(null);
+const ASSET_LOAD_CONCURRENCY = 4;
+const ASSET_LOAD_DELAY_MS = 16;
 
 export function AppStateProvider({ children, mode = "main" }: { children: ReactNode; mode?: AppWindowMode }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -136,6 +138,10 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
   const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {}, gameAssets: {} });
   const championDetailsRef = useRef<Record<number, LeagueChampionDetailsView>>({});
   const pendingImageKeysRef = useRef(new Set<string>());
+  const assetQueueRef = useRef<Array<() => void>>([]);
+  const activeAssetLoadsRef = useRef(0);
+  const assetQueueTimerRef = useRef<number | null>(null);
+  const drainAssetQueueRef = useRef<(() => void) | null>(null);
   const imageFlushRef = useRef<number | null>(null);
   const champSelectFingerprintRef = useRef("");
   const [leagueImages, setLeagueImages] = useState<LeagueImageUrls>(imageUrlsRef.current);
@@ -158,6 +164,47 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
       setLeagueImages(imageUrlsRef.current);
     });
   }, []);
+
+  const scheduleAssetQueueDrain = useCallback(() => {
+    if (assetQueueTimerRef.current !== null) {
+      return;
+    }
+
+    assetQueueTimerRef.current = window.setTimeout(() => {
+      assetQueueTimerRef.current = null;
+      drainAssetQueueRef.current?.();
+    }, ASSET_LOAD_DELAY_MS);
+  }, []);
+
+  const enqueueAssetLoad = useCallback(
+    (task: () => Promise<boolean>) =>
+      new Promise<boolean>((resolve) => {
+        assetQueueRef.current.push(() => {
+          activeAssetLoadsRef.current += 1;
+          void task()
+            .then(resolve)
+            .catch(() => resolve(false))
+            .finally(() => {
+              activeAssetLoadsRef.current = Math.max(0, activeAssetLoadsRef.current - 1);
+              scheduleAssetQueueDrain();
+            });
+        });
+
+        scheduleAssetQueueDrain();
+      }),
+    [scheduleAssetQueueDrain],
+  );
+
+  drainAssetQueueRef.current = () => {
+    while (activeAssetLoadsRef.current < ASSET_LOAD_CONCURRENCY) {
+      const runNext = assetQueueRef.current.shift();
+      if (!runNext) {
+        return;
+      }
+
+      runNext();
+    }
+  };
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -266,6 +313,10 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
       if (imageFlushRef.current !== null) {
         window.cancelAnimationFrame(imageFlushRef.current);
       }
+      if (assetQueueTimerRef.current !== null) {
+        window.clearTimeout(assetQueueTimerRef.current);
+      }
+      assetQueueRef.current = [];
     };
   }, []);
 
@@ -382,24 +433,26 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     }
 
     pendingImageKeysRef.current.add(key);
-    try {
-      const asset = await fetchLeagueProfileIcon(profileIconId);
-      const url = imageAssetUrl(asset);
-      imageUrlsRef.current = {
-        ...imageUrlsRef.current,
-        profileIcons: {
-          ...imageUrlsRef.current.profileIcons,
-          [profileIconId]: url,
-        },
-      };
-      scheduleLeagueImagesUpdate();
-      return true;
-    } catch {
-      return false;
-    } finally {
-      pendingImageKeysRef.current.delete(key);
-    }
-  }, [scheduleLeagueImagesUpdate]);
+    return enqueueAssetLoad(async () => {
+      try {
+        const asset = await fetchLeagueProfileIcon(profileIconId);
+        const url = imageAssetUrl(asset);
+        imageUrlsRef.current = {
+          ...imageUrlsRef.current,
+          profileIcons: {
+            ...imageUrlsRef.current.profileIcons,
+            [profileIconId]: url,
+          },
+        };
+        scheduleLeagueImagesUpdate();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        pendingImageKeysRef.current.delete(key);
+      }
+    });
+  }, [enqueueAssetLoad, scheduleLeagueImagesUpdate]);
 
   const loadLeagueChampionIconAction = useCallback(async (championId: number | null | undefined) => {
     if (!championId || imageUrlsRef.current.championIcons[championId]) {
@@ -412,24 +465,26 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     }
 
     pendingImageKeysRef.current.add(key);
-    try {
-      const asset = await fetchLeagueChampionIcon(championId);
-      const url = imageAssetUrl(asset);
-      imageUrlsRef.current = {
-        ...imageUrlsRef.current,
-        championIcons: {
-          ...imageUrlsRef.current.championIcons,
-          [championId]: url,
-        },
-      };
-      scheduleLeagueImagesUpdate();
-      return true;
-    } catch {
-      return false;
-    } finally {
-      pendingImageKeysRef.current.delete(key);
-    }
-  }, [scheduleLeagueImagesUpdate]);
+    return enqueueAssetLoad(async () => {
+      try {
+        const asset = await fetchLeagueChampionIcon(championId);
+        const url = imageAssetUrl(asset);
+        imageUrlsRef.current = {
+          ...imageUrlsRef.current,
+          championIcons: {
+            ...imageUrlsRef.current.championIcons,
+            [championId]: url,
+          },
+        };
+        scheduleLeagueImagesUpdate();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        pendingImageKeysRef.current.delete(key);
+      }
+    });
+  }, [enqueueAssetLoad, scheduleLeagueImagesUpdate]);
 
   const applyChampSelectSnapshotAction = useCallback((snapshot: ChampSelectSnapshot) => {
     const nextFingerprint = champSelectFingerprint(snapshot);
@@ -525,30 +580,32 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     }
 
     pendingImageKeysRef.current.add(key);
-    try {
-      const asset = await fetchLeagueGameAsset(kind, assetId);
-      const imageUrl = imageAssetUrl(asset.image);
-      imageUrlsRef.current = {
-        ...imageUrlsRef.current,
-        gameAssets: {
-          ...imageUrlsRef.current.gameAssets,
-          [key]: {
-            kind: asset.kind,
-            assetId: asset.assetId,
-            name: asset.name,
-            description: asset.description,
-            imageUrl,
+    return enqueueAssetLoad(async () => {
+      try {
+        const asset = await fetchLeagueGameAsset(kind, assetId);
+        const imageUrl = imageAssetUrl(asset.image);
+        imageUrlsRef.current = {
+          ...imageUrlsRef.current,
+          gameAssets: {
+            ...imageUrlsRef.current.gameAssets,
+            [key]: {
+              kind: asset.kind,
+              assetId: asset.assetId,
+              name: asset.name,
+              description: asset.description,
+              imageUrl,
+            },
           },
-        },
-      };
-      scheduleLeagueImagesUpdate();
-      return true;
-    } catch {
-      return false;
-    } finally {
-      pendingImageKeysRef.current.delete(key);
-    }
-  }, [scheduleLeagueImagesUpdate]);
+        };
+        scheduleLeagueImagesUpdate();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        pendingImageKeysRef.current.delete(key);
+      }
+    });
+  }, [enqueueAssetLoad, scheduleLeagueImagesUpdate]);
 
   const loadPostMatchDetailAction = useCallback(async (gameId: number) => {
     try {

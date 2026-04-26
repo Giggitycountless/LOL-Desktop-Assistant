@@ -45,8 +45,15 @@ export function ParticipantProfilePanel({
   }, [loadLeagueProfileIcon, profile?.profileIconId]);
 
   useEffect(() => {
+    const championIds = new Set<number>();
     for (const match of profile?.recentStats?.recentMatches ?? []) {
-      void loadLeagueChampionIcon(match.championId);
+      if (match.championId) {
+        championIds.add(match.championId);
+      }
+    }
+
+    for (const championId of championIds) {
+      void loadLeagueChampionIcon(championId);
     }
   }, [loadLeagueChampionIcon, profile?.recentStats?.recentMatches]);
 
@@ -186,19 +193,39 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
       return;
     }
 
+    const championIds = new Set<number>();
+    const itemIds = new Set<number>();
+    const runeIds = new Set<number>();
+    const spellIds = new Set<number>();
+
     for (const team of expandedDetail.teams) {
       for (const participant of team.participants) {
-        void loadLeagueChampionIcon(participant.championId);
+        if (participant.championId) {
+          championIds.add(participant.championId);
+        }
         for (const itemId of participant.items) {
-          void loadLeagueGameAsset("item", itemId);
+          itemIds.add(itemId);
         }
         for (const runeId of participant.runes) {
-          void loadLeagueGameAsset("rune", runeId);
+          runeIds.add(runeId);
         }
         for (const spellId of participant.spells) {
-          void loadLeagueGameAsset("spell", spellId);
+          spellIds.add(spellId);
         }
       }
+    }
+
+    for (const championId of championIds) {
+      void loadLeagueChampionIcon(championId);
+    }
+    for (const itemId of itemIds) {
+      void loadLeagueGameAsset("item", itemId);
+    }
+    for (const runeId of runeIds) {
+      void loadLeagueGameAsset("rune", runeId);
+    }
+    for (const spellId of spellIds) {
+      void loadLeagueGameAsset("spell", spellId);
     }
   }, [expandedDetail, loadLeagueChampionIcon, loadLeagueGameAsset]);
 
@@ -206,7 +233,7 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
     const nextGameId = expandedGameId === gameId ? null : gameId;
     setExpandedGameId(nextGameId);
 
-    if (nextGameId) {
+    if (nextGameId && !postMatchDetails[nextGameId]) {
       void loadPostMatchDetail(nextGameId);
     }
   }
@@ -230,6 +257,7 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
             detail={postMatchDetails[match.gameId]}
             gameAssets={leagueImages.gameAssets}
             isExpanded={expandedGameId === match.gameId}
+            imageUrl={match.championId ? leagueImages.championIcons[match.championId] : undefined}
             key={match.gameId}
             match={match}
             onParticipantSelect={(participantId) => selectParticipant(match.gameId, participantId)}
@@ -246,6 +274,7 @@ function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
 function RecentMatchRow({
   detail,
   gameAssets,
+  imageUrl,
   isExpanded,
   match,
   onParticipantSelect,
@@ -255,6 +284,7 @@ function RecentMatchRow({
 }: {
   detail: PostMatchDetail | undefined;
   gameAssets: Record<string, LeagueGameAssetView>;
+  imageUrl: string | undefined;
   isExpanded: boolean;
   match: RecentMatchSummary;
   onParticipantSelect: (participantId: number) => void;
@@ -262,9 +292,6 @@ function RecentMatchRow({
   participantImages: Record<number, string>;
   t: T;
 }) {
-  const { leagueImages } = useLeagueAssets();
-  const imageUrl = match.championId ? leagueImages.championIcons[match.championId] : undefined;
-
   return (
     <div className="rounded-md border border-zinc-200 bg-zinc-50">
       <button
