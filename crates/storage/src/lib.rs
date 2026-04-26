@@ -11,13 +11,8 @@ use domain::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
-const DATABASE_FILE_NAME: &str = "app.sqlite";
-const MIGRATION_0001: &str = include_str!("../migrations/0001_initial.sql");
-const MIGRATION_0002: &str = include_str!("../migrations/0002_state_foundation.sql");
-const MIGRATION_0003: &str = include_str!("../migrations/0003_player_notes.sql");
-const MIGRATION_0004: &str = include_str!("../migrations/0004_ranked_champion_cache.sql");
-const MIGRATION_0005: &str = include_str!("../migrations/0005_lobby_automation_settings.sql");
-const MIGRATION_0006: &str = include_str!("../migrations/0006_language_preference.sql");
+mod constants;
+use constants::*;
 
 #[derive(Debug, Clone)]
 pub struct SqliteStore {
