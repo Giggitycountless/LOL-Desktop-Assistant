@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 import { Activity } from "./pages/Activity";
 import { Dashboard } from "./pages/Dashboard";
@@ -48,13 +48,18 @@ function AppShell() {
   const [activePage, setActivePage] = useState<Page>("dashboard");
   const didApplyStartupPage = useRef(false);
   const compactMode = snapshot?.settings.compactMode ?? false;
+  const navigateTo = useCallback((page: Page) => {
+    startTransition(() => {
+      setActivePage(page);
+    });
+  }, []);
 
   useEffect(() => {
     if (snapshot && !didApplyStartupPage.current) {
-      setActivePage(snapshot.settings.startupPage);
+      navigateTo(snapshot.settings.startupPage);
       didApplyStartupPage.current = true;
     }
-  }, [snapshot]);
+  }, [navigateTo, snapshot]);
 
   return (
     <div className="flex h-screen min-h-0 bg-zinc-100 text-zinc-950">
@@ -87,7 +92,7 @@ function AppShell() {
                 type="button"
                 title={compactMode ? label : undefined}
                 aria-label={label}
-                onClick={() => setActivePage(page.id)}
+                onClick={() => navigateTo(page.id)}
                 className={[
                   "flex h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm font-medium transition",
                   compactMode ? "justify-center" : "",

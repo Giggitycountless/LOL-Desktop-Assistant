@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { clearActivityEntries, createActivityNote, listActivityEntries } from "../backend/activity";
 import { isCommandError } from "../backend/commands";
@@ -225,7 +225,9 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
 
     try {
       const response = await listActivityEntries(input);
-      setActivityEntries(response.records);
+      startTransition(() => {
+        setActivityEntries(response.records);
+      });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
@@ -239,7 +241,10 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     setIsLeagueClientLoading(true);
 
     try {
-      setLeagueSelfSnapshot(await fetchLeagueSelfSnapshot(input));
+      const response = await fetchLeagueSelfSnapshot(input);
+      startTransition(() => {
+        setLeagueSelfSnapshot(response);
+      });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
@@ -253,7 +258,10 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     setIsRankedChampionStatsLoading(true);
 
     try {
-      setRankedChampionStats(await fetchRankedChampionStats(input));
+      const response = await fetchRankedChampionStats(input);
+      startTransition(() => {
+        setRankedChampionStats(response);
+      });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
@@ -268,7 +276,9 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
 
     try {
       const response = await refreshRankedChampionStats(input);
-      setRankedChampionStats(response);
+      startTransition(() => {
+        setRankedChampionStats(response);
+      });
       setFeedback({
         kind: response.dataStatus === "staleCache" ? "error" : "success",
         message: response.statusMessage ?? "Ranked champion data refreshed",
@@ -492,7 +502,9 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
       return;
     }
     champSelectFingerprintRef.current = nextFingerprint;
-    setChampSelectSnapshot(snapshot);
+    startTransition(() => {
+      setChampSelectSnapshot(snapshot);
+    });
     for (const player of snapshot.players) {
       void loadLeagueChampionIconAction(player.championId);
       for (const match of player.recentStats?.recentMatches ?? []) {
@@ -610,7 +622,9 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
   const loadPostMatchDetailAction = useCallback(async (gameId: number) => {
     try {
       const detail = await fetchPostMatchDetail(gameId);
-      setPostMatchDetails((current) => ({ ...current, [gameId]: detail }));
+      startTransition(() => {
+        setPostMatchDetails((current) => ({ ...current, [gameId]: detail }));
+      });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
@@ -621,7 +635,9 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
   const loadParticipantProfileAction = useCallback(async (input: ParticipantPublicProfileInput) => {
     try {
       const profile = await fetchPostMatchParticipantProfile(input);
-      setParticipantProfiles((current) => ({ ...current, [participantProfileKey(input.gameId, input.participantId)]: profile }));
+      startTransition(() => {
+        setParticipantProfiles((current) => ({ ...current, [participantProfileKey(input.gameId, input.participantId)]: profile }));
+      });
       return true;
     } catch (caught: unknown) {
       setFeedback({ kind: "error", message: errorMessage(caught) });
