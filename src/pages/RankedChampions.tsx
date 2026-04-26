@@ -20,6 +20,7 @@ const sorts: Array<{ id: RankedChampionSort; label: string; metric: keyof Ranked
   { id: "banRate", label: "Ban rate", metric: "banRate" },
   { id: "pickRate", label: "Pick rate", metric: "pickRate" },
 ];
+const RANKED_RENDER_BATCH = 40;
 
 export function RankedChampions() {
   const {
@@ -32,8 +33,10 @@ export function RankedChampions() {
   const { leagueImages, loadLeagueChampionIcon } = useLeagueAssets();
   const [lane, setLane] = useState<RankedChampionLane>("top");
   const [sortBy, setSortBy] = useState<RankedChampionSort>("overall");
+  const [visibleCount, setVisibleCount] = useState(RANKED_RENDER_BATCH);
   const activeSort = useMemo(() => sorts.find((sort) => sort.id === sortBy) ?? sorts[0], [sortBy]);
   const records = rankedChampionStats?.records ?? [];
+  const visibleRecords = useMemo(() => records.slice(0, visibleCount), [records, visibleCount]);
   const status = rankedChampionStats?.dataStatus ?? "sample";
   const statusView = dataStatusView(status);
   const metadata = rankedChampionStats
@@ -45,10 +48,26 @@ export function RankedChampions() {
   }, [lane, loadRankedChampionStats, sortBy]);
 
   useEffect(() => {
-    for (const record of records) {
+    setVisibleCount(Math.min(RANKED_RENDER_BATCH, records.length));
+  }, [records]);
+
+  useEffect(() => {
+    if (visibleCount >= records.length) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setVisibleCount((current) => Math.min(current + RANKED_RENDER_BATCH, records.length));
+    }, 24);
+
+    return () => window.clearTimeout(timer);
+  }, [records.length, visibleCount]);
+
+  useEffect(() => {
+    for (const record of visibleRecords) {
       void loadLeagueChampionIcon(record.championId);
     }
-  }, [loadLeagueChampionIcon, records]);
+  }, [loadLeagueChampionIcon, visibleRecords]);
 
   return (
     <main className="min-h-0 flex-1 overflow-auto px-8 py-7">
@@ -69,7 +88,9 @@ export function RankedChampions() {
               <span>{isRankedChampionStatsLoading ? t("common.refreshing") : t("common.refresh")}</span>
             </button>
             <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-600">
-              {isRankedChampionStatsLoading ? t("common.loading") : `${records.length} ${t("ranked.champions")}`}
+              {isRankedChampionStatsLoading
+                ? t("common.loading")
+                : `${visibleRecords.length}/${records.length} ${t("ranked.champions")}`}
             </div>
           </div>
         </header>
@@ -157,7 +178,7 @@ export function RankedChampions() {
               </div>
             )}
 
-            {records.map((record, index) => (
+            {visibleRecords.map((record, index) => (
               <ChampionRow
                 highlightMetric={activeSort.metric}
                 imageUrl={leagueImages.championIcons[record.championId]}
@@ -167,6 +188,12 @@ export function RankedChampions() {
                 t={t}
               />
             ))}
+
+            {visibleRecords.length < records.length && (
+              <div className="min-w-[64rem] border-t border-zinc-100 px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                {t("common.loading")}
+              </div>
+            )}
           </div>
         </section>
       </div>

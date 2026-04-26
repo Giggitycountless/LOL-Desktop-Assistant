@@ -4,6 +4,7 @@ import type { ActivityKind } from "../backend/types";
 import { useAppCore } from "../state/AppStateProvider";
 
 type ActivityFilter = ActivityKind | "all";
+const ACTIVITY_RENDER_BATCH = 80;
 
 export function Activity() {
   const {
@@ -18,6 +19,7 @@ export function Activity() {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(ACTIVITY_RENDER_BATCH);
 
   const query = useMemo(
     () => ({
@@ -26,10 +28,30 @@ export function Activity() {
     }),
     [filter, limit],
   );
+  const visibleEntries = useMemo(
+    () => activityEntries.slice(0, visibleCount),
+    [activityEntries, visibleCount],
+  );
 
   useEffect(() => {
     void loadActivityEntries(query);
   }, [loadActivityEntries, query]);
+
+  useEffect(() => {
+    setVisibleCount(Math.min(ACTIVITY_RENDER_BATCH, activityEntries.length));
+  }, [activityEntries]);
+
+  useEffect(() => {
+    if (visibleCount >= activityEntries.length) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setVisibleCount((current) => Math.min(current + ACTIVITY_RENDER_BATCH, activityEntries.length));
+    }, 24);
+
+    return () => window.clearTimeout(timer);
+  }, [activityEntries.length, visibleCount]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -136,11 +158,13 @@ export function Activity() {
                 </label>
               </div>
               <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                {activityEntries.length} {t("activity.shown")}
+                {visibleEntries.length}/{activityEntries.length} {t("activity.shown")}
               </p>
             </div>
 
-            {isActivityLoading && <div className="px-5 py-12 text-center text-sm text-zinc-500">{t("dashboard.loadingActivity")}</div>}
+            {isActivityLoading && activityEntries.length === 0 && (
+              <div className="px-5 py-12 text-center text-sm text-zinc-500">{t("dashboard.loadingActivity")}</div>
+            )}
 
             {!isActivityLoading && activityEntries.length === 0 && (
               <div className="px-5 py-12 text-center">
@@ -149,9 +173,9 @@ export function Activity() {
               </div>
             )}
 
-            {!isActivityLoading && activityEntries.length > 0 && (
+            {activityEntries.length > 0 && (
               <div className="divide-y divide-zinc-200">
-                {activityEntries.map((entry) => (
+                {visibleEntries.map((entry) => (
                   <article key={entry.id} className="grid grid-cols-[1fr_9rem] gap-4 px-5 py-4">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -165,6 +189,11 @@ export function Activity() {
                     <time className="text-right text-xs font-medium text-zinc-500">{entry.createdAt}</time>
                   </article>
                 ))}
+                {visibleEntries.length < activityEntries.length && (
+                  <div className="px-5 py-4 text-center text-xs font-semibold uppercase tracking-wide text-zinc-400">
+                    {t("common.loading")}
+                  </div>
+                )}
               </div>
             )}
           </section>
