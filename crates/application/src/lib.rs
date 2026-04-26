@@ -1,8 +1,9 @@
 use std::{
     cmp::Ordering,
+    collections::{HashMap, HashSet},
     error::Error,
-    fmt,
-    time::{SystemTime, UNIX_EPOCH},
+    fmt, thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use domain::{
@@ -41,6 +42,7 @@ const SCORE_GOLD_WEIGHT: f64 = 0.12;
 const SCORE_CS_WEIGHT: f64 = 0.10;
 const SCORE_VISION_WEIGHT: f64 = 0.10;
 const SCORE_RESULT_WEIGHT: f64 = 0.08;
+const READY_CHECK_AUTOMATION_RETRY_DELAYS_MS: &[u64] = &[250, 600, 1_200];
 
 struct RankedChampionSeed {
     champion_id: i64,
@@ -325,6 +327,21 @@ pub trait LeagueClientReader {
         player_puuid: &str,
         limit: i64,
     ) -> Result<ParticipantRecentStats, LeagueClientReadError>;
+    fn participant_recent_stats_batch(
+        &self,
+        player_puuids: &[String],
+        limit: i64,
+    ) -> HashMap<String, Result<ParticipantRecentStats, LeagueClientReadError>> {
+        player_puuids
+            .iter()
+            .map(|player_puuid| {
+                (
+                    player_puuid.clone(),
+                    self.participant_recent_stats(player_puuid, limit),
+                )
+            })
+            .collect()
+    }
     fn champ_select_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError>;
     fn summoners_by_ids(&self, ids: &[i64]) -> Vec<SummonerBatchEntry>;
     fn summoners_by_names(&self, names: &[String]) -> Vec<SummonerBatchEntry>;
@@ -333,6 +350,7 @@ pub trait LeagueClientReader {
         &self,
         champion_id: i64,
     ) -> Result<LeagueChampionDetails, LeagueClientReadError>;
+    fn gameflow_phase(&self) -> Result<String, LeagueClientReadError>;
     fn accept_ready_check(&self) -> Result<(), LeagueClientReadError>;
     fn apply_champ_select_preferences(
         &self,
@@ -1772,6 +1790,15 @@ pub fn get_champ_select_snapshot(
     reader: &(impl LeagueClientReader + Sync),
     recent_limit: i64,
 ) -> Result<domain::ChampSelectSnapshot, ApplicationError> {
+    #[derive(Debug)]
+    struct PlayerSeed {
+        summoner_id: i64,
+        puuid: String,
+        display_name: String,
+        champion_id: Option<i64>,
+        team: domain::ChampSelectTeam,
+    }
+
     let session = reader.champ_select_session()?;
     let mut all_ids: Vec<i64> = session
         .ally_ids
@@ -1782,7 +1809,7 @@ pub fn get_champ_select_snapshot(
     all_ids.sort_unstable();
     all_ids.dedup();
     let summoners = reader.summoners_by_ids(&all_ids);
-    let summoners_by_id: std::collections::HashMap<i64, SummonerBatchEntry> = summoners
+    let summoners_by_id: HashMap<i64, SummonerBatchEntry> = summoners
         .into_iter()
         .map(|summoner| (summoner.summoner_id, summoner))
         .collect();
@@ -1793,7 +1820,7 @@ pub fn get_champ_select_snapshot(
         .filter(|name| !name.trim().is_empty())
         .cloned()
         .collect();
-    let summoners_by_name: std::collections::HashMap<String, SummonerBatchEntry> = reader
+    let summoners_by_name: HashMap<String, SummonerBatchEntry> = reader
         .summoners_by_names(&all_names)
         .into_iter()
         .map(|summoner| {
@@ -1804,9 +1831,9 @@ pub fn get_champ_select_snapshot(
         })
         .collect();
 
-    let mut players = Vec::new();
-    let mut seen_ids = std::collections::HashSet::new();
-    let mut seen_names = std::collections::HashSet::new();
+    let mut seeds = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut seen_names = HashSet::new();
 
     for summoner_id in all_ids {
         let summoner = summoners_by_id.get(&summoner_id);
@@ -1822,23 +1849,15 @@ pub fn get_champ_select_snapshot(
         let display_name = summoner
             .map(|value| value.display_name.clone())
             .unwrap_or_else(|| format!("Summoner {summoner_id}"));
-        let recent_stats = if puuid.is_empty() || recent_limit <= 0 {
-            None
-        } else {
-            reader.participant_recent_stats(&puuid, recent_limit).ok()
-        };
 
         seen_ids.insert(summoner_id);
         seen_names.insert(normalize_player_name(display_name.as_str()));
-        players.push(domain::ChampSelectPlayer {
+        seeds.push(PlayerSeed {
             summoner_id,
             puuid,
             display_name,
             champion_id,
-            champion_name: None,
             team,
-            ranked_queues: Vec::new(),
-            recent_stats,
         });
     }
 
@@ -1879,24 +1898,48 @@ pub fn get_champ_select_snapshot(
             .champion_selections_by_name
             .get(&normalized_name)
             .copied();
-        let recent_stats = if puuid.is_empty() || recent_limit <= 0 {
-            None
-        } else {
-            reader.participant_recent_stats(&puuid, recent_limit).ok()
-        };
 
         seen_names.insert(normalized_name);
-        players.push(domain::ChampSelectPlayer {
+        seeds.push(PlayerSeed {
             summoner_id,
             puuid,
             display_name,
             champion_id,
-            champion_name: None,
             team,
-            ranked_queues: Vec::new(),
-            recent_stats,
         });
     }
+
+    let recent_stats_by_puuid = if recent_limit <= 0 {
+        HashMap::new()
+    } else {
+        let mut puuids: Vec<String> = seeds
+            .iter()
+            .map(|seed| seed.puuid.clone())
+            .filter(|puuid| !puuid.is_empty())
+            .collect();
+        puuids.sort_unstable();
+        puuids.dedup();
+        reader.participant_recent_stats_batch(&puuids, recent_limit)
+    };
+    let players = seeds
+        .into_iter()
+        .map(|seed| {
+            let recent_stats = recent_stats_by_puuid
+                .get(seed.puuid.as_str())
+                .and_then(|result| result.clone().ok());
+
+            domain::ChampSelectPlayer {
+                summoner_id: seed.summoner_id,
+                puuid: seed.puuid,
+                display_name: seed.display_name,
+                champion_id: seed.champion_id,
+                champion_name: None,
+                team: seed.team,
+                ranked_queues: Vec::new(),
+                recent_stats,
+            }
+        })
+        .collect();
 
     Ok(domain::ChampSelectSnapshot {
         players,
@@ -1931,11 +1974,55 @@ pub fn run_ready_check_automation(
 ) -> Result<(), ApplicationError> {
     let settings = store.get_settings().map_err(ApplicationError::Storage)?;
 
-    if settings.auto_accept_enabled {
-        let _ = reader.accept_ready_check();
+    if !settings.auto_accept_enabled {
+        return Ok(());
     }
 
-    Ok(())
+    if !is_ready_check_active(reader)? {
+        return Ok(());
+    }
+
+    for (attempt, delay_ms) in READY_CHECK_AUTOMATION_RETRY_DELAYS_MS
+        .iter()
+        .copied()
+        .chain(std::iter::once(0))
+        .enumerate()
+    {
+        if let Err(error) = reader.accept_ready_check() {
+            record_system_activity(
+                store,
+                "Lobby automation accept failed",
+                format!("Auto-accept could not reach the League Client: {error}").as_str(),
+            );
+            return Err(error.into());
+        }
+
+        if !is_ready_check_active(reader)? {
+            return Ok(());
+        }
+
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+
+        if !is_ready_check_active(reader)? {
+            return Ok(());
+        }
+
+        if attempt + 1 == READY_CHECK_AUTOMATION_RETRY_DELAYS_MS.len() + 1 {
+            break;
+        }
+    }
+
+    let message =
+        "Auto-accept did not move the client out of ReadyCheck after multiple verification attempts"
+            .to_string();
+    record_system_activity(
+        store,
+        "Lobby automation requires manual accept",
+        "Auto-accept retried, but the client stayed in ReadyCheck. Manual confirmation may still be needed.",
+    );
+    Err(ApplicationError::Integration(message))
 }
 
 pub fn run_champ_select_automation(
@@ -1964,6 +2051,18 @@ fn normalize_player_name(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+fn is_ready_check_active(reader: &impl LeagueClientReader) -> Result<bool, ApplicationError> {
+    Ok(reader.gameflow_phase()?.as_str() == "ReadyCheck")
+}
+
+fn record_system_activity(store: &impl AppStore, title: &str, body: &str) {
+    let _ = store.create_activity_entry(NewActivityEntry {
+        kind: ActivityKind::System,
+        title: title.to_string(),
+        body: Some(body.to_string()),
+    });
+}
+
 fn negative_stable_id(value: &str) -> i64 {
     use std::{
         collections::hash_map::DefaultHasher,
@@ -1982,7 +2081,7 @@ mod tests {
         LeagueClientConnection, LeagueClientPhase, LeagueDataSection, LeagueDataWarning,
         MatchResult,
     };
-    use std::cell::RefCell;
+    use std::{cell::RefCell, sync::Mutex};
 
     #[test]
     fn save_settings_does_not_log_activity_when_values_are_unchanged() {
@@ -2043,7 +2142,7 @@ mod tests {
         let mut settings = default_settings();
         settings.auto_accept_enabled = false;
         let store = FakeStore::new(settings);
-        let reader = FakeLeagueClientReader::new(Vec::new());
+        let reader = FakeLeagueClientReader::new(Vec::new()).with_ready_check_phase();
 
         run_ready_check_automation(&store, &reader).expect("automation runs");
 
@@ -2051,13 +2150,58 @@ mod tests {
     }
 
     #[test]
-    fn ready_check_automation_calls_reader_when_enabled() {
+    fn ready_check_automation_calls_reader_when_enabled_and_ready_check_is_active() {
         let store = FakeStore::new(default_settings());
-        let reader = FakeLeagueClientReader::new(Vec::new());
+        let reader = FakeLeagueClientReader::new(Vec::new())
+            .with_phase_transition_after_accepts(1, "ChampSelect");
 
         run_ready_check_automation(&store, &reader).expect("automation runs");
 
         assert_eq!(reader.accept_ready_check_count(), 1);
+    }
+
+    #[test]
+    fn ready_check_automation_retries_until_phase_changes() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::new(Vec::new())
+            .with_phase_transition_after_accepts(3, "ChampSelect");
+
+        run_ready_check_automation(&store, &reader).expect("automation runs");
+
+        assert_eq!(reader.accept_ready_check_count(), 3);
+    }
+
+    #[test]
+    fn ready_check_automation_records_system_activity_when_ready_check_stays_active() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::new(Vec::new()).with_ready_check_phase();
+
+        let error =
+            run_ready_check_automation(&store, &reader).expect_err("automation should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Auto-accept did not move the client out of ReadyCheck after multiple verification attempts"
+        );
+        assert_eq!(reader.accept_ready_check_count(), 4);
+        assert_eq!(store.created_entries.borrow().len(), 1);
+        assert_eq!(store.created_entries.borrow()[0].kind, ActivityKind::System);
+    }
+
+    #[test]
+    fn ready_check_automation_records_system_activity_when_accept_call_errors() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::new(Vec::new()).with_ready_check_accept_error(
+            LeagueClientReadError::ClientUnavailable("League Client unavailable".to_string()),
+        );
+
+        let error =
+            run_ready_check_automation(&store, &reader).expect_err("automation should fail");
+
+        assert_eq!(error.code(), "clientUnavailable");
+        assert_eq!(reader.accept_ready_check_count(), 1);
+        assert_eq!(store.created_entries.borrow().len(), 1);
+        assert_eq!(store.created_entries.borrow()[0].kind, ActivityKind::System);
     }
 
     #[test]
@@ -2167,13 +2311,97 @@ mod tests {
             get_league_self_snapshot(&reader, LeagueSelfSnapshotInput { match_limit: None })
                 .expect("league self snapshot");
 
-        assert_eq!(*reader.last_match_limit.borrow(), Some(6));
+        assert_eq!(*reader.last_match_limit.lock().unwrap(), Some(6));
         assert_eq!(result.recent_matches.len(), 6);
         assert_eq!(result.recent_performance.match_count, 6);
         assert_eq!(result.recent_performance.average_kda, Some(10.0));
         assert_eq!(result.recent_performance.kda_tag, KdaTag::High);
         assert_eq!(result.recent_performance.recent_champions.len(), 6);
         assert_eq!(result.recent_performance.top_champions.len(), 3);
+    }
+
+    #[test]
+    fn champ_select_snapshot_batches_recent_stats() {
+        let mut champion_selections = HashMap::new();
+        champion_selections.insert(1, 103);
+        champion_selections.insert(2, 222);
+        let reader = FakeLeagueClientReader::with_champ_select_data(
+            ChampSelectSessionData {
+                ally_ids: vec![1, 2],
+                enemy_ids: Vec::new(),
+                champion_selections,
+                ally_names: Vec::new(),
+                enemy_names: Vec::new(),
+                champion_selections_by_name: HashMap::new(),
+            },
+            vec![
+                SummonerBatchEntry {
+                    summoner_id: 1,
+                    puuid: "puuid-1".to_string(),
+                    display_name: "Player One".to_string(),
+                },
+                SummonerBatchEntry {
+                    summoner_id: 2,
+                    puuid: "puuid-2".to_string(),
+                    display_name: "Player Two".to_string(),
+                },
+            ],
+            Vec::new(),
+        );
+
+        let snapshot = get_champ_select_snapshot(&reader, 6).expect("champ select snapshot reads");
+
+        assert_eq!(snapshot.players.len(), 2);
+        assert!(snapshot
+            .players
+            .iter()
+            .all(|player| player.recent_stats.is_some()));
+        assert_eq!(
+            reader.recent_stats_batch_calls(),
+            vec![vec!["puuid-1".to_string(), "puuid-2".to_string()]]
+        );
+    }
+
+    #[test]
+    fn champ_select_recent_stats_failure_keeps_other_players() {
+        let reader = FakeLeagueClientReader::with_champ_select_data(
+            ChampSelectSessionData {
+                ally_ids: vec![1, 2],
+                enemy_ids: Vec::new(),
+                champion_selections: HashMap::new(),
+                ally_names: Vec::new(),
+                enemy_names: Vec::new(),
+                champion_selections_by_name: HashMap::new(),
+            },
+            vec![
+                SummonerBatchEntry {
+                    summoner_id: 1,
+                    puuid: "puuid-1".to_string(),
+                    display_name: "Player One".to_string(),
+                },
+                SummonerBatchEntry {
+                    summoner_id: 2,
+                    puuid: "puuid-2".to_string(),
+                    display_name: "Player Two".to_string(),
+                },
+            ],
+            vec!["puuid-2".to_string()],
+        );
+
+        let snapshot = get_champ_select_snapshot(&reader, 6).expect("champ select snapshot reads");
+        let player_one = snapshot
+            .players
+            .iter()
+            .find(|player| player.display_name == "Player One")
+            .expect("player one is present");
+        let player_two = snapshot
+            .players
+            .iter()
+            .find(|player| player.display_name == "Player Two")
+            .expect("player two is present");
+
+        assert!(player_one.recent_stats.is_some());
+        assert!(player_two.recent_stats.is_none());
     }
 
     #[test]
@@ -2324,7 +2552,7 @@ mod tests {
         );
 
         assert!(matches!(result, Err(ApplicationError::Validation(_))));
-        assert_eq!(*reader.last_match_limit.borrow(), None);
+        assert_eq!(*reader.last_match_limit.lock().unwrap(), None);
     }
 
     #[test]
@@ -2878,10 +3106,19 @@ mod tests {
     }
 
     struct FakeLeagueClientReader {
+        champ_select_session: ChampSelectSessionData,
         data: LeagueSelfData,
-        completed_match: RefCell<Option<LeagueCompletedMatch>>,
-        last_match_limit: RefCell<Option<i64>>,
-        ready_check_accepts: RefCell<i64>,
+        completed_match: Mutex<Option<LeagueCompletedMatch>>,
+        failed_recent_puuids: Vec<String>,
+        gameflow_phase: Mutex<String>,
+        last_match_limit: Mutex<Option<i64>>,
+        ready_check_accepts: Mutex<i64>,
+        ready_check_clears_after: Option<i64>,
+        ready_check_next_phase: String,
+        ready_check_accept_error: Option<LeagueClientReadError>,
+        recent_stats_batch_calls: Mutex<Vec<Vec<String>>>,
+        summoners_by_id: Vec<SummonerBatchEntry>,
+        summoners_by_name: Vec<SummonerBatchEntry>,
     }
 
     impl FakeLeagueClientReader {
@@ -2897,15 +3134,39 @@ mod tests {
 
         fn with_data(data: LeagueSelfData) -> Self {
             Self {
+                champ_select_session: ChampSelectSessionData {
+                    ally_ids: Vec::new(),
+                    enemy_ids: Vec::new(),
+                    champion_selections: HashMap::new(),
+                    ally_names: Vec::new(),
+                    enemy_names: Vec::new(),
+                    champion_selections_by_name: HashMap::new(),
+                },
                 data,
-                completed_match: RefCell::new(None),
-                last_match_limit: RefCell::new(None),
-                ready_check_accepts: RefCell::new(0),
+                completed_match: Mutex::new(None),
+                failed_recent_puuids: Vec::new(),
+                gameflow_phase: Mutex::new("None".to_string()),
+                last_match_limit: Mutex::new(None),
+                ready_check_accepts: Mutex::new(0),
+                ready_check_clears_after: None,
+                ready_check_next_phase: "ChampSelect".to_string(),
+                ready_check_accept_error: None,
+                recent_stats_batch_calls: Mutex::new(Vec::new()),
+                summoners_by_id: Vec::new(),
+                summoners_by_name: Vec::new(),
             }
         }
 
         fn with_completed_match(completed_match: LeagueCompletedMatch) -> Self {
             Self {
+                champ_select_session: ChampSelectSessionData {
+                    ally_ids: Vec::new(),
+                    enemy_ids: Vec::new(),
+                    champion_selections: HashMap::new(),
+                    ally_names: Vec::new(),
+                    enemy_names: Vec::new(),
+                    champion_selections_by_name: HashMap::new(),
+                },
                 data: LeagueSelfData {
                     status: connected_status(),
                     summoner: None,
@@ -2913,14 +3174,59 @@ mod tests {
                     recent_matches: Vec::new(),
                     data_warnings: Vec::new(),
                 },
-                completed_match: RefCell::new(Some(completed_match)),
-                last_match_limit: RefCell::new(None),
-                ready_check_accepts: RefCell::new(0),
+                completed_match: Mutex::new(Some(completed_match)),
+                failed_recent_puuids: Vec::new(),
+                gameflow_phase: Mutex::new("None".to_string()),
+                last_match_limit: Mutex::new(None),
+                ready_check_accepts: Mutex::new(0),
+                ready_check_clears_after: None,
+                ready_check_next_phase: "ChampSelect".to_string(),
+                ready_check_accept_error: None,
+                recent_stats_batch_calls: Mutex::new(Vec::new()),
+                summoners_by_id: Vec::new(),
+                summoners_by_name: Vec::new(),
             }
         }
 
+        fn with_champ_select_data(
+            champ_select_session: ChampSelectSessionData,
+            summoners_by_id: Vec<SummonerBatchEntry>,
+            failed_recent_puuids: Vec<String>,
+        ) -> Self {
+            let mut reader = Self::new(Vec::new());
+            reader.champ_select_session = champ_select_session;
+            reader.summoners_by_id = summoners_by_id;
+            reader.failed_recent_puuids = failed_recent_puuids;
+            reader
+        }
+
+        fn with_ready_check_phase(self) -> Self {
+            *self.gameflow_phase.lock().unwrap() = "ReadyCheck".to_string();
+            self
+        }
+
+        fn with_phase_transition_after_accepts(mut self, accepts: i64, next_phase: &str) -> Self {
+            *self.gameflow_phase.lock().unwrap() = "ReadyCheck".to_string();
+            self.ready_check_clears_after = Some(accepts);
+            self.ready_check_next_phase = next_phase.to_string();
+            if accepts <= 0 {
+                *self.gameflow_phase.lock().unwrap() = next_phase.to_string();
+            }
+            self
+        }
+
+        fn with_ready_check_accept_error(mut self, error: LeagueClientReadError) -> Self {
+            *self.gameflow_phase.lock().unwrap() = "ReadyCheck".to_string();
+            self.ready_check_accept_error = Some(error);
+            self
+        }
+
         fn accept_ready_check_count(&self) -> i64 {
-            *self.ready_check_accepts.borrow()
+            *self.ready_check_accepts.lock().unwrap()
+        }
+
+        fn recent_stats_batch_calls(&self) -> Vec<Vec<String>> {
+            self.recent_stats_batch_calls.lock().unwrap().clone()
         }
     }
 
@@ -2929,8 +3235,12 @@ mod tests {
             Ok(self.data.status.clone())
         }
 
+        fn gameflow_phase(&self) -> Result<String, LeagueClientReadError> {
+            Ok(self.gameflow_phase.lock().unwrap().clone())
+        }
+
         fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError> {
-            self.last_match_limit.replace(Some(match_limit));
+            *self.last_match_limit.lock().unwrap() = Some(match_limit);
 
             Ok(LeagueSelfData {
                 status: self.data.status.clone(),
@@ -2989,7 +3299,8 @@ mod tests {
             game_id: i64,
         ) -> Result<LeagueCompletedMatch, LeagueClientReadError> {
             self.completed_match
-                .borrow()
+                .lock()
+                .unwrap()
                 .clone()
                 .filter(|completed_match| completed_match.game_id == game_id)
                 .ok_or_else(|| {
@@ -3002,9 +3313,19 @@ mod tests {
 
         fn participant_recent_stats(
             &self,
-            _player_puuid: &str,
+            player_puuid: &str,
             limit: i64,
         ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+            if self
+                .failed_recent_puuids
+                .iter()
+                .any(|value| value == player_puuid)
+            {
+                return Err(LeagueClientReadError::Integration(
+                    "Recent stats unavailable".to_string(),
+                ));
+            }
+
             let recent_matches = (1..=limit)
                 .map(|id| sample_match(id, format!("Recent Champion {id}").as_str(), 5, 2, 7))
                 .collect();
@@ -3017,23 +3338,51 @@ mod tests {
             })
         }
 
+        fn participant_recent_stats_batch(
+            &self,
+            player_puuids: &[String],
+            limit: i64,
+        ) -> HashMap<String, Result<ParticipantRecentStats, LeagueClientReadError>> {
+            self.recent_stats_batch_calls
+                .lock()
+                .unwrap()
+                .push(player_puuids.to_vec());
+
+            player_puuids
+                .iter()
+                .map(|player_puuid| {
+                    (
+                        player_puuid.clone(),
+                        self.participant_recent_stats(player_puuid, limit),
+                    )
+                })
+                .collect()
+        }
+
         fn champ_select_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError> {
-            Ok(ChampSelectSessionData {
-                ally_ids: Vec::new(),
-                enemy_ids: Vec::new(),
-                champion_selections: std::collections::HashMap::new(),
-                ally_names: Vec::new(),
-                enemy_names: Vec::new(),
-                champion_selections_by_name: std::collections::HashMap::new(),
-            })
+            Ok(self.champ_select_session.clone())
         }
 
-        fn summoners_by_ids(&self, _ids: &[i64]) -> Vec<SummonerBatchEntry> {
-            Vec::new()
+        fn summoners_by_ids(&self, ids: &[i64]) -> Vec<SummonerBatchEntry> {
+            self.summoners_by_id
+                .iter()
+                .filter(|entry| ids.contains(&entry.summoner_id))
+                .cloned()
+                .collect()
         }
 
-        fn summoners_by_names(&self, _names: &[String]) -> Vec<SummonerBatchEntry> {
-            Vec::new()
+        fn summoners_by_names(&self, names: &[String]) -> Vec<SummonerBatchEntry> {
+            let normalized_names: HashSet<String> = names
+                .iter()
+                .map(|name| normalize_player_name(name.as_str()))
+                .collect();
+            self.summoners_by_name
+                .iter()
+                .filter(|entry| {
+                    normalized_names.contains(&normalize_player_name(entry.display_name.as_str()))
+                })
+                .cloned()
+                .collect()
         }
 
         fn champion_catalog(&self) -> Result<Vec<LeagueChampionSummary>, LeagueClientReadError> {
@@ -3071,7 +3420,19 @@ mod tests {
         }
 
         fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
-            *self.ready_check_accepts.borrow_mut() += 1;
+            let mut accept_count = self.ready_check_accepts.lock().unwrap();
+            *accept_count += 1;
+
+            if let Some(target_accepts) = self.ready_check_clears_after {
+                if *accept_count >= target_accepts {
+                    *self.gameflow_phase.lock().unwrap() = self.ready_check_next_phase.clone();
+                }
+            }
+
+            if let Some(error) = &self.ready_check_accept_error {
+                return Err(error.clone());
+            }
+
             Ok(())
         }
 

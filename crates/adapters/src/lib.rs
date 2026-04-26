@@ -20,6 +20,7 @@ use domain::{
     RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
 use futures_util::{SinkExt, Stream, StreamExt};
+use rayon::prelude::*;
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -508,12 +509,72 @@ impl LocalLeagueClient {
             .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
             .map(champion_name_map)
             .unwrap_or_default();
-        let history = session
-            .get_json::<LcuMatchHistoryResponse>(puuid_matches_path(player_puuid, limit).as_str())
-            .map_err(read_error_from_request)?;
-        let recent_matches = map_recent_matches_for_puuid(history, player_puuid, &champion_names);
 
-        Ok(participant_recent_stats(recent_matches))
+        read_participant_recent_stats_with_session(&session, player_puuid, limit, &champion_names)
+    }
+
+    fn read_participant_recent_stats_batch(
+        &self,
+        player_puuids: &[String],
+        limit: i64,
+    ) -> HashMap<String, Result<ParticipantRecentStats, LeagueClientReadError>> {
+        let mut results = HashMap::new();
+        let mut valid_puuids = Vec::new();
+
+        for player_puuid in player_puuids {
+            if !is_safe_lcu_path_id(player_puuid) {
+                results.insert(
+                    player_puuid.clone(),
+                    Err(LeagueClientReadError::Integration(
+                        "Participant identity could not be used for local profile lookup"
+                            .to_string(),
+                    )),
+                );
+                continue;
+            }
+
+            if !valid_puuids.contains(player_puuid) {
+                valid_puuids.push(player_puuid.clone());
+            }
+        }
+
+        if valid_puuids.is_empty() {
+            return results;
+        }
+
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => {
+                let error = read_error_from_status(status);
+                for player_puuid in valid_puuids {
+                    results.insert(player_puuid, Err(error.clone()));
+                }
+                return results;
+            }
+        };
+        let champion_names = session
+            .get_json::<Vec<LcuChampionSummary>>("/lol-game-data/assets/v1/champion-summary.json")
+            .map(champion_name_map)
+            .unwrap_or_default();
+
+        results.extend(
+            valid_puuids
+                .par_iter()
+                .map(|player_puuid| {
+                    (
+                        player_puuid.clone(),
+                        read_participant_recent_stats_with_session(
+                            &session,
+                            player_puuid,
+                            limit,
+                            &champion_names,
+                        ),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        );
+
+        results
     }
 
     fn read_live_client_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError> {
@@ -684,6 +745,10 @@ impl LeagueClientReader for LocalLeagueClient {
         Ok(self.read_status())
     }
 
+    fn gameflow_phase(&self) -> Result<String, LeagueClientReadError> {
+        LocalLeagueClient::gameflow_phase(self)
+    }
+
     fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError> {
         Ok(self.read_self_data(match_limit))
     }
@@ -720,6 +785,14 @@ impl LeagueClientReader for LocalLeagueClient {
         limit: i64,
     ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
         self.read_participant_recent_stats(player_puuid, limit)
+    }
+
+    fn participant_recent_stats_batch(
+        &self,
+        player_puuids: &[String],
+        limit: i64,
+    ) -> HashMap<String, Result<ParticipantRecentStats, LeagueClientReadError>> {
+        self.read_participant_recent_stats_batch(player_puuids, limit)
     }
 
     fn champ_select_session(&self) -> Result<ChampSelectSessionData, LeagueClientReadError> {
@@ -2317,6 +2390,20 @@ fn participant_champion_name(
         .and_then(|id| champion_names.get(&id).cloned())
         .or_else(|| participant.champion_id.map(|id| format!("Champion {id}")))
         .unwrap_or_else(|| "Unknown champion".to_string())
+}
+
+fn read_participant_recent_stats_with_session(
+    session: &LcuSession,
+    player_puuid: &str,
+    limit: i64,
+    champion_names: &HashMap<i64, String>,
+) -> Result<ParticipantRecentStats, LeagueClientReadError> {
+    let history = session
+        .get_json::<LcuMatchHistoryResponse>(puuid_matches_path(player_puuid, limit).as_str())
+        .map_err(read_error_from_request)?;
+    let recent_matches = map_recent_matches_for_puuid(history, player_puuid, champion_names);
+
+    Ok(participant_recent_stats(recent_matches))
 }
 
 fn participant_recent_stats(matches: Vec<RecentMatchSummary>) -> ParticipantRecentStats {

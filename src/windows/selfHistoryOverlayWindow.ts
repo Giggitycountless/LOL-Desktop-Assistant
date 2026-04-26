@@ -14,7 +14,7 @@ export async function openSelfHistoryOverlayWindow() {
   const overlayWindow = new WebviewWindow(SELF_HISTORY_OVERLAY_WINDOW_LABEL, {
     alwaysOnTop: true,
     center: true,
-    decorations: true,
+    decorations: false,
     focus: true,
     height: 800,
     minHeight: 700,

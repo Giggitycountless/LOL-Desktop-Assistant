@@ -674,6 +674,7 @@ pub enum KdaTag {
 #[serde(rename_all = "camelCase")]
 pub struct ChampSelectPlayer {
     pub summoner_id: i64,
+    #[serde(default, skip_serializing)]
     pub puuid: String,
     pub display_name: String,
     pub champion_id: Option<i64>,

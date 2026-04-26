@@ -340,7 +340,6 @@ export type ParticipantPublicProfile = {
 
 export type ChampSelectPlayer = {
   summonerId: number;
-  puuid: string;
   displayName: string;
   championId: number | null;
   championName: string | null;
