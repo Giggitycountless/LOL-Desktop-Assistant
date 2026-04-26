@@ -820,6 +820,11 @@ where
         .as_ref()
         .map(|entry| entry.recent_limit)
         .unwrap_or(CHAMP_SELECT_LIGHT_RECENT_LIMIT);
+    let needs_hydration = champ_select_cache_needs_hydration(
+        cached_roster_fingerprint.as_deref(),
+        roster_fingerprint.as_str(),
+        cached_recent_limit,
+    );
 
     if cached_roster_fingerprint.as_deref() == Some(roster_fingerprint.as_str()) {
         if let Some(cached_snapshot) = cached_snapshot.as_ref() {
@@ -832,6 +837,9 @@ where
     let fingerprint = champ_select_fingerprint(&snapshot);
     let cached_fingerprint = cached_snapshot.as_ref().map(champ_select_fingerprint);
     if cached_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+        if needs_hydration {
+            start_champ_select_hydration(app_handle.clone(), state.clone(), roster_fingerprint);
+        }
         return Some(fingerprint);
     }
 
@@ -846,10 +854,19 @@ where
     });
     let _ = app_handle.emit("champ-select-update", &snapshot);
 
-    if cached_roster_fingerprint.as_deref() != Some(roster_fingerprint.as_str()) {
+    if needs_hydration {
         start_champ_select_hydration(app_handle.clone(), state.clone(), roster_fingerprint);
     }
     Some(fingerprint)
+}
+
+fn champ_select_cache_needs_hydration(
+    cached_roster_fingerprint: Option<&str>,
+    roster_fingerprint: &str,
+    cached_recent_limit: i64,
+) -> bool {
+    cached_roster_fingerprint != Some(roster_fingerprint)
+        || cached_recent_limit < CHAMP_SELECT_HYDRATED_RECENT_LIMIT
 }
 
 fn start_champ_select_hydration<R: Runtime + 'static>(
@@ -1461,6 +1478,33 @@ mod tests {
 
         assert_eq!(champ_select_roster_fingerprint(&snapshot), initial);
         assert_ne!(champ_select_fingerprint(&snapshot), full_initial);
+    }
+
+    #[test]
+    fn champ_select_cache_hydrates_matching_light_roster() {
+        assert!(champ_select_cache_needs_hydration(
+            Some("same-roster"),
+            "same-roster",
+            CHAMP_SELECT_LIGHT_RECENT_LIMIT,
+        ));
+    }
+
+    #[test]
+    fn champ_select_cache_skips_hydration_for_matching_hydrated_roster() {
+        assert!(!champ_select_cache_needs_hydration(
+            Some("same-roster"),
+            "same-roster",
+            CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
+        ));
+    }
+
+    #[test]
+    fn champ_select_cache_hydrates_new_roster() {
+        assert!(champ_select_cache_needs_hydration(
+            Some("old-roster"),
+            "new-roster",
+            CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
+        ));
     }
 
     #[test]
