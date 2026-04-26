@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 
 import { PostMatchAnalysis } from "../components/PostMatchAnalysis";
-import { useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
+import { useAppCore, useLeagueAssets, type LeagueGameAssetView } from "../state/AppStateProvider";
+import { listenWithCleanup } from "../backend/events";
 import {
   isSelectedParticipant,
   openParticipantProfileWindow,
@@ -25,15 +25,13 @@ type SelectedParticipant = {
 export function Matches() {
   const {
     leagueSelfSnapshot,
-    leagueImages,
     postMatchDetails,
     isLeagueClientLoading,
-    loadLeagueGameAsset,
-    loadLeagueChampionIcon,
     loadPostMatchDetail,
     refreshLeagueClient,
     t,
-  } = useAppState();
+  } = useAppCore();
+  const { leagueImages, loadLeagueGameAsset, loadLeagueChampionIcon } = useLeagueAssets();
   const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
   const matches = leagueSelfSnapshot?.recentMatches ?? [];
 
@@ -69,21 +67,13 @@ export function Matches() {
   }, [loadLeagueChampionIcon, loadLeagueGameAsset, postMatchDetails]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    void listen<unknown>(PARTICIPANT_PROFILE_CHANGED_EVENT, (event) => {
+    return listenWithCleanup<unknown>(PARTICIPANT_PROFILE_CHANGED_EVENT, (event) => {
       if (!isSelectedParticipant(event.payload) || !postMatchDetails[event.payload.gameId]) {
         return;
       }
 
       void loadPostMatchDetail(event.payload.gameId);
-    }).then((handler) => {
-      unlisten = handler;
     });
-
-    return () => {
-      unlisten?.();
-    };
   }, [loadPostMatchDetail, postMatchDetails]);
 
   function selectParticipant(selection: SelectedParticipant) {

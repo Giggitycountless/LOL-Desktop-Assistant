@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import type { ActivityKind } from "../backend/types";
-import { useAppState } from "../state/AppStateProvider";
+import { useAppCore } from "../state/AppStateProvider";
 
 type ActivityFilter = ActivityKind | "all";
 
@@ -12,7 +12,7 @@ export function Activity() {
     createActivityNote,
     loadActivityEntries,
     t,
-  } = useAppState();
+  } = useAppCore();
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [limit, setLimit] = useState(100);
   const [title, setTitle] = useState("");

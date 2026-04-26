@@ -2,6 +2,8 @@ use std::{
     collections::{HashMap, HashSet},
     fmt, fs,
     path::PathBuf,
+    pin::Pin,
+    task::{Context, Poll},
     time::Duration,
 };
 
@@ -9,6 +11,7 @@ use application::{
     ChampSelectSessionData, LeagueClientReadError, LeagueClientReader, RankedChampionDataError,
     RankedChampionDataProvider, RankedChampionRefreshInput, SummonerBatchEntry,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use domain::{
     CurrentSummonerProfile, LeagueChampionAbility, LeagueChampionDetails, LeagueChampionSummary,
     LeagueClientConnection, LeagueClientPhase, LeagueClientStatus, LeagueDataSection,
@@ -16,10 +19,16 @@ use domain::{
     MatchResult, ParticipantRecentStats, RankedChampionDataSnapshot, RankedChampionLane,
     RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
+use futures_util::{SinkExt, Stream, StreamExt};
 use reqwest::{blocking::Client, header::CONTENT_TYPE, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sysinfo::{ProcessesToUpdate, System};
+use tokio::net::TcpStream;
+use tokio_tungstenite::{
+    tungstenite::{self, client::IntoClientRequest, http::HeaderValue, Message},
+    Connector, MaybeTlsStream, WebSocketStream,
+};
 
 const LOCAL_LCU_HOST: &str = "127.0.0.1";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -319,6 +328,24 @@ impl LocalLeagueClient {
         }
     }
 
+    pub fn gameflow_phase(&self) -> Result<String, LeagueClientReadError> {
+        let session = match self.open_session() {
+            SessionOpenResult::Ready(session) => session,
+            SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
+        };
+
+        session
+            .get_json::<String>("/lol-gameflow/v1/gameflow-phase")
+            .map_err(read_error_from_request)
+    }
+
+    pub async fn open_websocket(&self) -> Result<LcuWebSocketClient, LcuWebSocketError> {
+        let credentials = self
+            .read_lockfile_credentials()
+            .map_err(|_| LcuWebSocketError::Unavailable)?;
+        LcuWebSocketClient::connect(credentials).await
+    }
+
     fn read_status(&self) -> LeagueClientStatus {
         let session = match self.open_session() {
             SessionOpenResult::Ready(session) => session,
@@ -550,10 +577,27 @@ impl LocalLeagueClient {
     }
 
     fn open_session(&self) -> SessionOpenResult {
+        let credentials = match self.read_lockfile_credentials() {
+            Ok(credentials) => credentials,
+            Err(status) => return SessionOpenResult::Status(status),
+        };
+
+        match LcuSession::new(credentials) {
+            Ok(session) => SessionOpenResult::Ready(session),
+            Err(_) => SessionOpenResult::Status(unavailable_status(
+                true,
+                true,
+                LeagueClientPhase::Unavailable,
+                "League Client local connection could not be prepared",
+            )),
+        }
+    }
+
+    fn read_lockfile_credentials(&self) -> Result<LockfileCredentials, LeagueClientStatus> {
         let lockfile_path = match self.discover_lockfile_path() {
             LockfileDiscovery::Found(path) => path,
             LockfileDiscovery::NotRunning => {
-                return SessionOpenResult::Status(unavailable_status(
+                return Err(unavailable_status(
                     false,
                     false,
                     LeagueClientPhase::NotRunning,
@@ -561,7 +605,7 @@ impl LocalLeagueClient {
                 ));
             }
             LockfileDiscovery::LockfileMissing => {
-                return SessionOpenResult::Status(unavailable_status(
+                return Err(unavailable_status(
                     true,
                     false,
                     LeagueClientPhase::LockfileMissing,
@@ -573,7 +617,7 @@ impl LocalLeagueClient {
         let lockfile_contents = match fs::read_to_string(&lockfile_path) {
             Ok(contents) => contents,
             Err(_) => {
-                return SessionOpenResult::Status(unavailable_status(
+                return Err(unavailable_status(
                     true,
                     true,
                     LeagueClientPhase::Unavailable,
@@ -582,25 +626,13 @@ impl LocalLeagueClient {
             }
         };
 
-        let credentials = match parse_lockfile(lockfile_contents.as_str()) {
-            Ok(credentials) => credentials,
-            Err(_) => {
-                return SessionOpenResult::Status(unavailable_status(
-                    true,
-                    true,
-                    LeagueClientPhase::Unavailable,
-                    "League Client lockfile could not be parsed",
-                ));
-            }
-        };
-
-        match LcuSession::new(credentials) {
-            Ok(session) => SessionOpenResult::Ready(session),
-            Err(_) => SessionOpenResult::Status(unavailable_status(
+        match parse_lockfile(lockfile_contents.as_str()) {
+            Ok(credentials) => Ok(credentials),
+            Err(_) => Err(unavailable_status(
                 true,
                 true,
                 LeagueClientPhase::Unavailable,
-                "League Client local connection could not be prepared",
+                "League Client lockfile could not be parsed",
             )),
         }
     }
@@ -859,19 +891,14 @@ impl LeagueClientReader for LocalLeagueClient {
             SessionOpenResult::Ready(session) => session,
             SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
         };
-        let ready_check = session
-            .get_json::<LcuReadyCheck>("/lol-matchmaking/v1/ready-check")
-            .map_err(read_error_from_request)?;
 
-        if strings_match(ready_check.state.as_deref(), Some("InProgress"))
-            && !strings_match(ready_check.player_response.as_deref(), Some("Accepted"))
-        {
-            session
-                .post_empty("/lol-matchmaking/v1/ready-check/accept")
-                .map_err(read_error_from_request)?;
+        match session.post_empty("/lol-matchmaking/v1/ready-check/accept") {
+            Ok(()) => Ok(()),
+            Err(error @ (LcuRequestError::Unauthorized | LcuRequestError::Patching)) => {
+                Err(read_error_from_request(error))
+            }
+            Err(_) => Ok(()),
         }
-
-        Ok(())
     }
 
     fn apply_champ_select_preferences(
@@ -915,6 +942,187 @@ enum LockfileDiscovery {
     Found(PathBuf),
     NotRunning,
     LockfileMissing,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LcuWebSocketEvent {
+    pub uri: String,
+    pub event_type: String,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LcuSubscription {
+    JsonApiEvent(&'static str),
+}
+
+impl fmt::Display for LcuSubscription {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::JsonApiEvent(path) => write!(
+                formatter,
+                "OnJsonApiEvent_{}",
+                path.trim_start_matches('/').replace('/', "_")
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LcuWebSocketError {
+    Unavailable,
+    Authentication,
+    Disconnected,
+    Send,
+    Unexpected,
+}
+
+impl fmt::Debug for LcuWebSocketError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Unavailable => "Unavailable",
+            Self::Authentication => "Authentication",
+            Self::Disconnected => "Disconnected",
+            Self::Send => "Send",
+            Self::Unexpected => "Unexpected",
+        };
+        formatter
+            .debug_tuple("LcuWebSocketError")
+            .field(&label)
+            .finish()
+    }
+}
+
+pub struct LcuWebSocketClient {
+    stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+}
+
+impl LcuWebSocketClient {
+    async fn connect(credentials: LockfileCredentials) -> Result<Self, LcuWebSocketError> {
+        let auth = BASE64_STANDARD.encode(format!("riot:{}", credentials.password));
+        let mut request = format!("wss://{LOCAL_LCU_HOST}:{}", credentials.port)
+            .into_client_request()
+            .map_err(|_| LcuWebSocketError::Authentication)?;
+        request.headers_mut().insert(
+            "Authorization",
+            HeaderValue::from_str(format!("Basic {auth}").as_str())
+                .map_err(|_| LcuWebSocketError::Authentication)?,
+        );
+
+        let tls = native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .map_err(|_| LcuWebSocketError::Unavailable)?;
+        let connector = Connector::NativeTls(tls);
+        let (stream, _) =
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector))
+                .await
+                .map_err(|error| match error {
+                    tungstenite::Error::Http(response)
+                        if response.status() == tungstenite::http::StatusCode::UNAUTHORIZED
+                            || response.status() == tungstenite::http::StatusCode::FORBIDDEN =>
+                    {
+                        LcuWebSocketError::Authentication
+                    }
+                    _ => LcuWebSocketError::Disconnected,
+                })?;
+
+        Ok(Self { stream })
+    }
+
+    pub async fn subscribe(
+        &mut self,
+        subscription: LcuSubscription,
+    ) -> Result<(), LcuWebSocketError> {
+        self.stream
+            .send(Message::Text(format!("[5,\"{subscription}\"]").into()))
+            .await
+            .map_err(|error| match error {
+                tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
+                    LcuWebSocketError::Disconnected
+                }
+                _ => LcuWebSocketError::Send,
+            })
+    }
+
+    pub async fn next_event(&mut self) -> Result<Option<LcuWebSocketEvent>, LcuWebSocketError> {
+        while let Some(message) = self.stream.next().await {
+            match message {
+                Ok(Message::Text(text)) => {
+                    if let Some(event) = parse_lcu_websocket_event_text(text.as_str()) {
+                        return Ok(Some(event));
+                    }
+                }
+                Ok(Message::Close(_)) => return Ok(None),
+                Ok(_) => {}
+                Err(error) => {
+                    return Err(match error {
+                        tungstenite::Error::ConnectionClosed
+                        | tungstenite::Error::AlreadyClosed => LcuWebSocketError::Disconnected,
+                        _ => LcuWebSocketError::Unexpected,
+                    });
+                }
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+impl Stream for LcuWebSocketClient {
+    type Item = LcuWebSocketEvent;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            match self.stream.poll_next_unpin(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(Message::Text(text)))) => {
+                    if let Some(event) = parse_lcu_websocket_event_text(text.as_str()) {
+                        return Poll::Ready(Some(event));
+                    }
+                }
+                Poll::Ready(Some(Ok(Message::Close(_))) | Some(Err(_)) | None) => {
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Some(Ok(_))) => {}
+            }
+        }
+    }
+}
+
+pub fn parse_lcu_websocket_event_text(text: &str) -> Option<LcuWebSocketEvent> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let items = value.as_array()?;
+    if items.first()?.as_i64()? != 8 {
+        return None;
+    }
+
+    let subscription = items.get(1).and_then(Value::as_str);
+    let payload = items.get(2)?.as_object()?;
+    let uri = payload
+        .get("uri")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| subscription.and_then(uri_from_lcu_subscription))?;
+    let event_type = payload
+        .get("eventType")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let data = payload.get("data").cloned().unwrap_or(Value::Null);
+
+    Some(LcuWebSocketEvent {
+        uri,
+        event_type,
+        data,
+    })
+}
+
+fn uri_from_lcu_subscription(subscription: &str) -> Option<String> {
+    subscription
+        .strip_prefix("OnJsonApiEvent_")
+        .map(|path| format!("/{}", path.replace('_', "/")))
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1396,13 +1604,6 @@ struct LcuChampSelectAction {
 struct LcuChampSelectActionUpdate {
     champion_id: i64,
     completed: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LcuReadyCheck {
-    state: Option<String>,
-    player_response: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2599,6 +2800,64 @@ mod tests {
         let message = format!("{credentials:?}");
 
         assert!(message.contains("<redacted>"));
+        assert!(!message.contains(TEST_LOCKFILE_VALUE));
+    }
+
+    #[test]
+    fn lcu_subscription_formats_json_api_events() {
+        assert_eq!(
+            LcuSubscription::JsonApiEvent("/lol-gameflow/v1/gameflow-phase").to_string(),
+            "OnJsonApiEvent_lol-gameflow_v1_gameflow-phase"
+        );
+        assert_eq!(
+            LcuSubscription::JsonApiEvent("/lol-champ-select/v1/session").to_string(),
+            "OnJsonApiEvent_lol-champ-select_v1_session"
+        );
+    }
+
+    #[test]
+    fn parses_lcu_websocket_json_api_event() {
+        let event = parse_lcu_websocket_event_text(
+            r#"[8,"OnJsonApiEvent_lol-gameflow_v1_gameflow-phase",{"data":"ChampSelect","eventType":"Update","uri":"/lol-gameflow/v1/gameflow-phase"}]"#,
+        )
+        .expect("event parses");
+
+        assert_eq!(event.uri, "/lol-gameflow/v1/gameflow-phase");
+        assert_eq!(event.event_type, "Update");
+        assert_eq!(event.data.as_str(), Some("ChampSelect"));
+    }
+
+    #[test]
+    fn parses_lcu_websocket_event_uri_from_subscription() {
+        let event = parse_lcu_websocket_event_text(
+            r#"[8,"OnJsonApiEvent_lol-champ-select_v1_session",{"data":{"myTeam":[],"theirTeam":[]},"eventType":"Update"}]"#,
+        )
+        .expect("event parses");
+
+        assert_eq!(event.uri, "/lol-champ-select/v1/session");
+        assert_eq!(event.event_type, "Update");
+        assert!(event.data.get("myTeam").is_some());
+    }
+
+    #[test]
+    fn ignores_invalid_lcu_websocket_events() {
+        assert!(parse_lcu_websocket_event_text("not-json").is_none());
+        assert!(parse_lcu_websocket_event_text(r#"{"opcode":8}"#).is_none());
+        assert!(parse_lcu_websocket_event_text(
+            r#"[5,"OnJsonApiEvent_lol-gameflow_v1_gameflow-phase",{"data":"ChampSelect","eventType":"Update","uri":"/lol-gameflow/v1/gameflow-phase"}]"#
+        )
+        .is_none());
+        assert!(parse_lcu_websocket_event_text(
+            r#"[8,"OnJsonApiEvent",{"data":"ChampSelect","eventType":"Update"}]"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn lcu_websocket_error_debug_does_not_expose_auth_details() {
+        let message = format!("{:?}", LcuWebSocketError::Authentication);
+
+        assert!(!message.contains("Authorization"));
         assert!(!message.contains(TEST_LOCKFILE_VALUE));
     }
 

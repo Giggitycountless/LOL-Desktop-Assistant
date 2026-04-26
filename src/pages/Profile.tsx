@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { useAppState } from "../state/AppStateProvider";
+import { useAppCore, useLeagueAssets } from "../state/AppStateProvider";
 import type { KdaTag, RankedQueue, RankedQueueSummary, RecentChampionSummary } from "../backend/types";
 import type { TranslationKey } from "../i18n";
 import { openSelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindow";
@@ -8,13 +8,11 @@ import { openSelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindo
 export function Profile() {
   const {
     leagueSelfSnapshot,
-    leagueImages,
     isLeagueClientLoading,
-    loadLeagueChampionIcon,
-    loadLeagueProfileIcon,
     refreshLeagueClient,
     t,
-  } = useAppState();
+  } = useAppCore();
+  const { leagueImages, loadLeagueChampionIcon, loadLeagueProfileIcon } = useLeagueAssets();
   const league = leagueSelfSnapshot;
   const summoner = league?.summoner ?? null;
   const profileIconId = summoner?.profileIconId ?? null;

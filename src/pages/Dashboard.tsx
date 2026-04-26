@@ -1,11 +1,11 @@
-import { useAppState } from "../state/AppStateProvider";
+import { useAppCore } from "../state/AppStateProvider";
 import type { LeagueClientStatus } from "../backend/types";
 import type { TranslationKey } from "../i18n";
 
 type T = (key: TranslationKey) => string;
 
 export function Dashboard() {
-  const { snapshot, isLoading, leagueSelfSnapshot, isLeagueClientLoading, refreshLeagueClient, t } = useAppState();
+  const { snapshot, isLoading, leagueSelfSnapshot, isLeagueClientLoading, refreshLeagueClient, t } = useAppCore();
   const health = snapshot?.health;
   const recentActivity = snapshot?.recentActivity ?? [];
 

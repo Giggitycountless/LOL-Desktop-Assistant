@@ -1822,7 +1822,7 @@ pub fn get_champ_select_snapshot(
         let display_name = summoner
             .map(|value| value.display_name.clone())
             .unwrap_or_else(|| format!("Summoner {summoner_id}"));
-        let recent_stats = if puuid.is_empty() {
+        let recent_stats = if puuid.is_empty() || recent_limit <= 0 {
             None
         } else {
             reader.participant_recent_stats(&puuid, recent_limit).ok()
@@ -1879,7 +1879,7 @@ pub fn get_champ_select_snapshot(
             .champion_selections_by_name
             .get(&normalized_name)
             .copied();
-        let recent_stats = if puuid.is_empty() {
+        let recent_stats = if puuid.is_empty() || recent_limit <= 0 {
             None
         } else {
             reader.participant_recent_stats(&puuid, recent_limit).ok()
@@ -1921,11 +1921,28 @@ pub fn run_lobby_automation(
     store: &impl AppStore,
     reader: &impl LeagueClientReader,
 ) -> Result<(), ApplicationError> {
+    run_ready_check_automation(store, reader)?;
+    run_champ_select_automation(store, reader)
+}
+
+pub fn run_ready_check_automation(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+) -> Result<(), ApplicationError> {
     let settings = store.get_settings().map_err(ApplicationError::Storage)?;
 
     if settings.auto_accept_enabled {
         let _ = reader.accept_ready_check();
     }
+
+    Ok(())
+}
+
+pub fn run_champ_select_automation(
+    store: &impl AppStore,
+    reader: &impl LeagueClientReader,
+) -> Result<(), ApplicationError> {
+    let settings = store.get_settings().map_err(ApplicationError::Storage)?;
 
     let pick_champion_id = settings
         .auto_pick_enabled
@@ -2019,6 +2036,28 @@ mod tests {
             store.created_entries.borrow()[0].kind,
             ActivityKind::Settings
         );
+    }
+
+    #[test]
+    fn ready_check_automation_respects_auto_accept_setting() {
+        let mut settings = default_settings();
+        settings.auto_accept_enabled = false;
+        let store = FakeStore::new(settings);
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        run_ready_check_automation(&store, &reader).expect("automation runs");
+
+        assert_eq!(reader.accept_ready_check_count(), 0);
+    }
+
+    #[test]
+    fn ready_check_automation_calls_reader_when_enabled() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        run_ready_check_automation(&store, &reader).expect("automation runs");
+
+        assert_eq!(reader.accept_ready_check_count(), 1);
     }
 
     #[test]
@@ -2842,6 +2881,7 @@ mod tests {
         data: LeagueSelfData,
         completed_match: RefCell<Option<LeagueCompletedMatch>>,
         last_match_limit: RefCell<Option<i64>>,
+        ready_check_accepts: RefCell<i64>,
     }
 
     impl FakeLeagueClientReader {
@@ -2860,6 +2900,7 @@ mod tests {
                 data,
                 completed_match: RefCell::new(None),
                 last_match_limit: RefCell::new(None),
+                ready_check_accepts: RefCell::new(0),
             }
         }
 
@@ -2874,7 +2915,12 @@ mod tests {
                 },
                 completed_match: RefCell::new(Some(completed_match)),
                 last_match_limit: RefCell::new(None),
+                ready_check_accepts: RefCell::new(0),
             }
+        }
+
+        fn accept_ready_check_count(&self) -> i64 {
+            *self.ready_check_accepts.borrow()
         }
     }
 
@@ -3025,6 +3071,7 @@ mod tests {
         }
 
         fn accept_ready_check(&self) -> Result<(), LeagueClientReadError> {
+            *self.ready_check_accepts.borrow_mut() += 1;
             Ok(())
         }
 

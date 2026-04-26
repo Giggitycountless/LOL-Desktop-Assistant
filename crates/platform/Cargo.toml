@@ -11,6 +11,8 @@ domain.workspace = true
 serde.workspace = true
 storage.workspace = true
 tauri.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

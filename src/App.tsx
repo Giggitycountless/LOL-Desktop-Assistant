@@ -8,7 +8,7 @@ import { Profile } from "./pages/Profile";
 import { RankedChampions } from "./pages/RankedChampions";
 import { SelfHistoryOverlay } from "./pages/SelfHistoryOverlay";
 import { Settings } from "./pages/Settings";
-import { AppStateProvider, useAppState } from "./state/AppStateProvider";
+import { AppStateProvider, useAppCore, type AppWindowMode } from "./state/AppStateProvider";
 import type { StartupPage } from "./backend/types";
 import { oppositeLanguage, type TranslationKey } from "./i18n";
 import { selectionFromParticipantProfileHash } from "./windows/participantProfileWindow";
@@ -28,9 +28,10 @@ const pages: Array<{ id: Page; labelKey: TranslationKey; icon: IconName }> = [
 export function App() {
   const participantProfileSelection = selectionFromParticipantProfileHash(window.location.hash);
   const isSelfHistoryOverlay = isSelfHistoryOverlayHash(window.location.hash);
+  const mode: AppWindowMode = participantProfileSelection ? "participant" : isSelfHistoryOverlay ? "overlay" : "main";
 
   return (
-    <AppStateProvider>
+    <AppStateProvider mode={mode}>
       {participantProfileSelection ? (
         <ParticipantProfileWindow initialSelection={participantProfileSelection} />
       ) : isSelfHistoryOverlay ? (
@@ -43,7 +44,7 @@ export function App() {
 }
 
 function AppShell() {
-  const { snapshot, feedback, clearFeedback, isLoading, effectiveLanguage, setLanguagePreference, t } = useAppState();
+  const { snapshot, feedback, clearFeedback, isLoading, effectiveLanguage, setLanguagePreference, t } = useAppCore();
   const [activePage, setActivePage] = useState<Page>("dashboard");
   const didApplyStartupPage = useRef(false);
   const compactMode = snapshot?.settings.compactMode ?? false;

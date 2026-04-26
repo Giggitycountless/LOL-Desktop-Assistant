@@ -217,11 +217,9 @@ fn main() {
         .setup(|app| {
             platform::setup_app(app)?;
 
+            let app_handle = app.handle().clone();
             let state = app.state::<platform::AppState>().inner().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                let _ = platform::run_lobby_automation(&state);
-            });
+            platform::start_league_event_service(app_handle, state);
 
             Ok(())
         })

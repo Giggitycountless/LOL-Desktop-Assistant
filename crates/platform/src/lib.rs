@@ -2,11 +2,18 @@ use std::{
     collections::HashMap,
     error::Error,
     path::Path,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
     time::{Duration, Instant},
 };
 
-use adapters::{LocalLeagueClient, RemoteRankedChampionJsonProvider};
+use adapters::{
+    LcuSubscription, LcuWebSocketError, LcuWebSocketEvent, LocalLeagueClient,
+    RemoteRankedChampionJsonProvider,
+};
 use application::{
     ActivityListInput, ActivityNoteInput, ApplicationError, LeagueChampionDetailsInput,
     LeagueChampionIconInput, LeagueClientReadError, LeagueClientReader, LeagueGameAssetInput,
@@ -23,7 +30,8 @@ use domain::{
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
-use tauri::{Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_RANKED_CHAMPION_DATA_URL: &str = "https://raw.githubusercontent.com/Giggitycountless/LOL-Desktop-Assistant/main/data/ranked-champions/latest.json";
 const CHAMP_SELECT_CACHE_TTL: Duration = Duration::from_secs(8);
@@ -31,11 +39,18 @@ const RECENT_STATS_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const RECENT_STATS_FAILURE_CACHE_TTL: Duration = Duration::from_secs(30);
 const SUMMONER_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
 const SUMMONER_FAILURE_CACHE_TTL: Duration = Duration::from_secs(30);
+const CHAMP_SELECT_LIGHT_RECENT_LIMIT: i64 = 0;
+const CHAMP_SELECT_HYDRATED_RECENT_LIMIT: i64 = 6;
+const CHAMP_SELECT_HYDRATION_DEBOUNCE: Duration = Duration::from_millis(250);
+const LEAGUE_EVENT_FALLBACK_POLL: Duration = Duration::from_secs(30);
+const GAMEFLOW_PHASE_URI: &str = "/lol-gameflow/v1/gameflow-phase";
+const CHAMP_SELECT_SESSION_URI: &str = "/lol-champ-select/v1/session";
 
 #[derive(Debug, Clone)]
 pub struct ChampSelectCacheEntry {
     snapshot: domain::ChampSelectSnapshot,
     cached_at: Instant,
+    recent_limit: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +65,18 @@ pub struct SummonerCacheEntry {
     cached_at: Instant,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChampSelectHydrationState {
+    fingerprint: String,
+    token: CancellationToken,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LeagueEventServiceState {
+    phase: Option<String>,
+    fingerprint: String,
+}
+
 #[derive(Debug)]
 pub struct AppState {
     store: SqliteStore,
@@ -59,6 +86,9 @@ pub struct AppState {
     pub recent_stats_cache: Mutex<HashMap<String, RecentStatsCacheEntry>>,
     pub summoner_id_cache: Mutex<HashMap<i64, SummonerCacheEntry>>,
     pub summoner_name_cache: Mutex<HashMap<String, SummonerCacheEntry>>,
+    pub league_event_service_started: Arc<AtomicBool>,
+    pub champ_select_hydration: Arc<Mutex<Option<ChampSelectHydrationState>>>,
+    pub league_phase: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -73,6 +103,9 @@ impl AppState {
             recent_stats_cache: Mutex::new(HashMap::new()),
             summoner_id_cache: Mutex::new(HashMap::new()),
             summoner_name_cache: Mutex::new(HashMap::new()),
+            league_event_service_started: Arc::new(AtomicBool::new(false)),
+            champ_select_hydration: Arc::new(Mutex::new(None)),
+            league_phase: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -87,6 +120,9 @@ impl Clone for AppState {
             recent_stats_cache: Mutex::new(self.recent_stats_cache.lock().unwrap().clone()),
             summoner_id_cache: Mutex::new(self.summoner_id_cache.lock().unwrap().clone()),
             summoner_name_cache: Mutex::new(self.summoner_name_cache.lock().unwrap().clone()),
+            league_event_service_started: Arc::clone(&self.league_event_service_started),
+            champ_select_hydration: Arc::clone(&self.champ_select_hydration),
+            league_phase: Arc::clone(&self.league_phase),
         }
     }
 }
@@ -494,6 +530,422 @@ pub fn setup_app<R: Runtime>(app: &mut tauri::App<R>) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+pub fn start_league_event_service<R: Runtime + 'static>(
+    app_handle: AppHandle<R>,
+    state: AppState,
+) -> bool
+where
+    AppHandle<R>: Send,
+{
+    if !mark_league_event_service_started(&state) {
+        return false;
+    }
+
+    thread::spawn(move || league_event_loop(app_handle, state));
+    true
+}
+
+fn mark_league_event_service_started(state: &AppState) -> bool {
+    !state
+        .league_event_service_started
+        .swap(true, Ordering::SeqCst)
+}
+
+fn league_event_loop<R: Runtime + 'static>(app_handle: AppHandle<R>, state: AppState)
+where
+    AppHandle<R>: Send,
+{
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    let mut backoff = LeagueReconnectBackoff::new();
+    let mut service_state = LeagueEventServiceState::default();
+
+    loop {
+        let result = runtime.block_on(league_websocket_session(
+            &app_handle,
+            &state,
+            &mut service_state,
+            &mut backoff,
+        ));
+
+        service_state.phase = None;
+        service_state.fingerprint.clear();
+        set_league_phase(&state, None);
+        cancel_champ_select_hydration(&state);
+
+        if result.is_err()
+            && !run_league_event_http_fallback(&app_handle, &state, &mut service_state)
+        {
+            *state.champ_select_cache.lock().unwrap() = None;
+            let _ = app_handle.emit("champ-select-clear", ());
+        }
+
+        thread::sleep(backoff.next_delay().min(LEAGUE_EVENT_FALLBACK_POLL));
+    }
+}
+
+async fn league_websocket_session<R: Runtime + 'static>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+    service_state: &mut LeagueEventServiceState,
+    backoff: &mut LeagueReconnectBackoff,
+) -> Result<(), LcuWebSocketError>
+where
+    AppHandle<R>: Send,
+{
+    let mut client = state.league_client.open_websocket().await?;
+    client
+        .subscribe(LcuSubscription::JsonApiEvent(GAMEFLOW_PHASE_URI))
+        .await?;
+    client
+        .subscribe(LcuSubscription::JsonApiEvent(CHAMP_SELECT_SESSION_URI))
+        .await?;
+
+    run_league_event_http_fallback(app_handle, state, service_state);
+
+    while let Some(event) = client.next_event().await? {
+        if handle_lcu_websocket_event(app_handle, state, service_state, &event) {
+            backoff.reset();
+        }
+    }
+
+    Err(LcuWebSocketError::Disconnected)
+}
+
+fn handle_lcu_websocket_event<R: Runtime + 'static>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+    service_state: &mut LeagueEventServiceState,
+    event: &LcuWebSocketEvent,
+) -> bool
+where
+    AppHandle<R>: Send,
+{
+    match event.uri.as_str() {
+        GAMEFLOW_PHASE_URI => {
+            let Some(phase) = event.data.as_str() else {
+                return false;
+            };
+            if service_state.phase.as_deref() != Some(phase) {
+                handle_league_phase_change(app_handle, state, phase);
+                service_state.phase = Some(phase.to_string());
+            }
+            true
+        }
+        CHAMP_SELECT_SESSION_URI => {
+            if service_state.phase.as_deref() != Some("ChampSelect")
+                && state.league_phase.lock().unwrap().as_deref() != Some("ChampSelect")
+            {
+                return false;
+            }
+
+            if let Some(fingerprint) = refresh_champ_select_from_event(app_handle, state) {
+                service_state.fingerprint = fingerprint;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn run_league_event_http_fallback<R: Runtime + 'static>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+    service_state: &mut LeagueEventServiceState,
+) -> bool
+where
+    AppHandle<R>: Send,
+{
+    let Ok(phase) = state.league_client.gameflow_phase() else {
+        return false;
+    };
+
+    if service_state.phase.as_deref() != Some(phase.as_str()) {
+        handle_league_phase_change(app_handle, state, phase.as_str());
+        service_state.phase = Some(phase.clone());
+    }
+
+    if phase == "ChampSelect" {
+        if let Some(fingerprint) = refresh_champ_select_from_event(app_handle, state) {
+            service_state.fingerprint = fingerprint;
+        }
+    }
+
+    true
+}
+
+fn handle_league_phase_change<R: Runtime + 'static>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+    phase: &str,
+) where
+    AppHandle<R>: Send,
+{
+    let _ = app_handle.emit("league-phase-update", phase);
+    set_league_phase(state, Some(phase.to_string()));
+
+    match phase {
+        "ReadyCheck" => {
+            let _ = run_ready_check_automation(state);
+        }
+        "ChampSelect" => {
+            let _ = run_champ_select_automation(state);
+            if phase == "ChampSelect" {
+                let _ = refresh_champ_select_from_event(app_handle, state);
+            }
+        }
+        "GameStart" | "PreEndOfGame" | "None" => {
+            cancel_champ_select_hydration(state);
+            *state.champ_select_cache.lock().unwrap() = None;
+            let _ = app_handle.emit("champ-select-clear", ());
+        }
+        _ => {}
+    }
+}
+
+fn set_league_phase(state: &AppState, phase: Option<String>) {
+    *state.league_phase.lock().unwrap() = phase;
+}
+
+fn current_league_phase_is(state: &AppState, phase: &str) -> bool {
+    state.league_phase.lock().unwrap().as_deref() == Some(phase)
+}
+
+fn refresh_champ_select_from_event<R: Runtime + 'static>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+) -> Option<String>
+where
+    AppHandle<R>: Send,
+{
+    let mut snapshot = build_champ_select_snapshot(state, CHAMP_SELECT_LIGHT_RECENT_LIMIT).ok()?;
+    let roster_fingerprint = champ_select_roster_fingerprint(&snapshot);
+    let cached_entry = state
+        .champ_select_cache
+        .lock()
+        .unwrap()
+        .as_ref()
+        .cloned();
+    let cached_snapshot = cached_entry.as_ref().map(|entry| entry.snapshot.clone());
+    let cached_roster_fingerprint = cached_snapshot
+        .as_ref()
+        .map(champ_select_roster_fingerprint);
+    let cached_recent_limit = cached_entry
+        .as_ref()
+        .map(|entry| entry.recent_limit)
+        .unwrap_or(CHAMP_SELECT_LIGHT_RECENT_LIMIT);
+
+    if cached_roster_fingerprint.as_deref() == Some(roster_fingerprint.as_str()) {
+        if let Some(cached_snapshot) = cached_snapshot.as_ref() {
+            merge_recent_stats_from_cache(&mut snapshot, cached_snapshot);
+        }
+    } else {
+        cancel_champ_select_hydration(state);
+    }
+
+    let fingerprint = champ_select_fingerprint(&snapshot);
+    let cached_fingerprint = cached_snapshot.as_ref().map(champ_select_fingerprint);
+    if cached_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+        return Some(fingerprint);
+    }
+
+    *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+        snapshot: snapshot.clone(),
+        cached_at: Instant::now(),
+        recent_limit: if cached_roster_fingerprint.as_deref() == Some(roster_fingerprint.as_str()) {
+            cached_recent_limit
+        } else {
+            CHAMP_SELECT_LIGHT_RECENT_LIMIT
+        },
+    });
+    let _ = app_handle.emit("champ-select-update", &snapshot);
+
+    if cached_roster_fingerprint.as_deref() != Some(roster_fingerprint.as_str()) {
+        start_champ_select_hydration(app_handle.clone(), state.clone(), roster_fingerprint);
+    }
+    Some(fingerprint)
+}
+
+fn start_champ_select_hydration<R: Runtime + 'static>(
+    app_handle: AppHandle<R>,
+    state: AppState,
+    fingerprint: String,
+) where
+    AppHandle<R>: Send,
+{
+    let token = CancellationToken::new();
+    {
+        let mut hydration = state.champ_select_hydration.lock().unwrap();
+        if hydration
+            .as_ref()
+            .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled())
+        {
+            return;
+        }
+        if let Some(entry) = hydration.take() {
+            entry.token.cancel();
+        }
+        *hydration = Some(ChampSelectHydrationState {
+            fingerprint: fingerprint.clone(),
+            token: token.clone(),
+        });
+    }
+
+    thread::spawn(move || {
+        thread::sleep(CHAMP_SELECT_HYDRATION_DEBOUNCE);
+        if token.is_cancelled() {
+            return;
+        }
+
+        let Ok(snapshot) = build_champ_select_snapshot(&state, CHAMP_SELECT_HYDRATED_RECENT_LIMIT)
+        else {
+            clear_champ_select_hydration_if_current(&state, fingerprint.as_str());
+            return;
+        };
+
+        if token.is_cancelled()
+            || champ_select_roster_fingerprint(&snapshot) != fingerprint
+            || !current_league_phase_is(&state, "ChampSelect")
+        {
+            if !token.is_cancelled() {
+                clear_champ_select_hydration_if_current(&state, fingerprint.as_str());
+            }
+            return;
+        }
+
+        let current_is_same = state
+            .champ_select_hydration
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled());
+        if !current_is_same {
+            return;
+        }
+
+        *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+            snapshot: snapshot.clone(),
+            cached_at: Instant::now(),
+            recent_limit: CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
+        });
+        let mut hydration = state.champ_select_hydration.lock().unwrap();
+        if hydration
+            .as_ref()
+            .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled())
+        {
+            *hydration = None;
+        }
+        drop(hydration);
+        let _ = app_handle.emit("champ-select-update", &snapshot);
+    });
+}
+
+fn cancel_champ_select_hydration(state: &AppState) {
+    if let Some(entry) = state.champ_select_hydration.lock().unwrap().take() {
+        entry.token.cancel();
+    }
+}
+
+fn clear_champ_select_hydration_if_current(state: &AppState, fingerprint: &str) {
+    let mut hydration = state.champ_select_hydration.lock().unwrap();
+    if hydration
+        .as_ref()
+        .is_some_and(|entry| entry.fingerprint == fingerprint && !entry.token.is_cancelled())
+    {
+        *hydration = None;
+    }
+}
+
+fn champ_select_fingerprint(snapshot: &domain::ChampSelectSnapshot) -> String {
+    let mut parts: Vec<String> = snapshot
+        .players
+        .iter()
+        .map(|player| {
+            format!(
+                "{}:{}:{}:{:?}:{}",
+                player.summoner_id,
+                player.display_name,
+                player.champion_id.unwrap_or_default(),
+                player.team,
+                player.puuid
+            )
+        })
+        .collect();
+    parts.sort_unstable();
+    parts.join("|")
+}
+
+fn champ_select_roster_fingerprint(snapshot: &domain::ChampSelectSnapshot) -> String {
+    let mut parts: Vec<String> = snapshot
+        .players
+        .iter()
+        .map(|player| {
+            format!(
+                "{}:{}:{:?}:{}",
+                player.summoner_id, player.display_name, player.team, player.puuid
+            )
+        })
+        .collect();
+    parts.sort_unstable();
+    parts.join("|")
+}
+
+fn merge_recent_stats_from_cache(
+    snapshot: &mut domain::ChampSelectSnapshot,
+    cached_snapshot: &domain::ChampSelectSnapshot,
+) {
+    let cached_stats: HashMap<String, ParticipantRecentStats> = cached_snapshot
+        .players
+        .iter()
+        .filter_map(|player| {
+            player
+                .recent_stats
+                .clone()
+                .map(|stats| (player.puuid.clone(), stats))
+        })
+        .collect();
+
+    for player in &mut snapshot.players {
+        if player.recent_stats.is_none() {
+            player.recent_stats = cached_stats.get(player.puuid.as_str()).cloned();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LeagueReconnectBackoff {
+    index: usize,
+}
+
+impl LeagueReconnectBackoff {
+    const DELAYS: [Duration; 4] = [
+        Duration::from_secs(1),
+        Duration::from_secs(3),
+        Duration::from_secs(10),
+        Duration::from_secs(30),
+    ];
+
+    fn new() -> Self {
+        Self { index: 0 }
+    }
+
+    fn next_delay(&mut self) -> Duration {
+        let delay = Self::DELAYS[self.index.min(Self::DELAYS.len() - 1)];
+        if self.index + 1 < Self::DELAYS.len() {
+            self.index += 1;
+        }
+        delay
+    }
+
+    fn reset(&mut self) {
+        self.index = 0;
+    }
+}
+
 pub fn healthcheck(state: &AppState) -> HealthReport {
     match state.store.health() {
         Ok(health) => application::health_report(DatabaseStatus::Ok, Some(health.schema_version)),
@@ -598,6 +1050,16 @@ pub fn run_lobby_automation(state: &AppState) -> Result<(), CommandError> {
         .map_err(CommandError::from)
 }
 
+pub fn run_ready_check_automation(state: &AppState) -> Result<(), CommandError> {
+    application::run_ready_check_automation(&state.store, &state.league_client)
+        .map_err(CommandError::from)
+}
+
+pub fn run_champ_select_automation(state: &AppState) -> Result<(), CommandError> {
+    application::run_champ_select_automation(&state.store, &state.league_client)
+        .map_err(CommandError::from)
+}
+
 pub fn get_league_self_snapshot(
     state: &AppState,
     command: LeagueSelfSnapshotCommand,
@@ -615,31 +1077,44 @@ pub fn get_champ_select_snapshot(
     state: &AppState,
     command: ChampSelectSnapshotCommand,
 ) -> Result<domain::ChampSelectSnapshot, CommandError> {
+    let recent_limit = command
+        .recent_limit
+        .unwrap_or(CHAMP_SELECT_HYDRATED_RECENT_LIMIT);
     if let Some(snapshot) = state
         .champ_select_cache
         .lock()
         .unwrap()
         .as_ref()
-        .filter(|entry| entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL)
+        .filter(|entry| {
+            entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL && entry.recent_limit >= recent_limit
+        })
         .map(|entry| entry.snapshot.clone())
     {
         return Ok(snapshot);
     }
 
-    let recent_limit = command.recent_limit.unwrap_or(6);
+    let snapshot = build_champ_select_snapshot(state, recent_limit)?;
+    *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
+        snapshot: snapshot.clone(),
+        cached_at: Instant::now(),
+        recent_limit,
+    });
+
+    Ok(snapshot)
+}
+
+fn build_champ_select_snapshot(
+    state: &AppState,
+    recent_limit: i64,
+) -> Result<domain::ChampSelectSnapshot, CommandError> {
     let cached_reader = CachedLeagueClientReader {
         inner: &state.league_client,
         recent_stats_cache: &state.recent_stats_cache,
         summoner_id_cache: &state.summoner_id_cache,
         summoner_name_cache: &state.summoner_name_cache,
     };
-    let snapshot = application::get_champ_select_snapshot(&cached_reader, recent_limit)?;
-    *state.champ_select_cache.lock().unwrap() = Some(ChampSelectCacheEntry {
-        snapshot: snapshot.clone(),
-        cached_at: Instant::now(),
-    });
 
-    Ok(snapshot)
+    application::get_champ_select_snapshot(&cached_reader, recent_limit).map_err(CommandError::from)
 }
 
 pub fn get_ranked_champion_stats(
@@ -791,12 +1266,12 @@ pub fn clear_player_note(
 mod tests {
     use super::*;
     use domain::{
-        ActivityKind, KdaTag, LeagueClientConnection, LeagueClientPhase, LeagueDataSection,
-        LeagueDataWarning, MatchResult, ParticipantMetricLeader, ParticipantPublicProfile,
-        ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
-        PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
-        RankedChampionLane, RankedChampionSort, RecentMatchSummary, RecentPerformanceSummary,
-        StartupPage,
+        ActivityKind, ChampSelectPlayer, ChampSelectSnapshot, ChampSelectTeam, KdaTag,
+        LeagueClientConnection, LeagueClientPhase, LeagueDataSection, LeagueDataWarning,
+        MatchResult, ParticipantMetricLeader, ParticipantPublicProfile, ParticipantRecentStats,
+        PlayerNoteSummary, PlayerNoteView, PostMatchComparison, PostMatchDetail,
+        PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals, RankedChampionLane,
+        RankedChampionSort, RecentMatchSummary, RecentPerformanceSummary, StartupPage,
     };
     use serde_json::json;
     use std::{
@@ -831,6 +1306,86 @@ mod tests {
         assert_eq!(command.settings.auto_pick_champion_id, Some(103));
         assert!(command.settings.auto_ban_enabled);
         assert_eq!(command.settings.auto_ban_champion_id, Some(122));
+    }
+
+    #[test]
+    fn reconnect_backoff_uses_fixed_cap() {
+        let mut backoff = LeagueReconnectBackoff::new();
+
+        assert_eq!(backoff.next_delay(), Duration::from_secs(1));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(3));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(10));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(30));
+        assert_eq!(backoff.next_delay(), Duration::from_secs(30));
+
+        backoff.reset();
+        assert_eq!(backoff.next_delay(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn league_event_service_guard_only_marks_once() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+
+        assert!(mark_league_event_service_started(&state));
+        assert!(!mark_league_event_service_started(&state));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn champ_select_fingerprint_ignores_recent_stats() {
+        let mut snapshot = sample_champ_select_snapshot();
+        let initial = champ_select_fingerprint(&snapshot);
+        snapshot.players[0].recent_stats = Some(ParticipantRecentStats {
+            match_count: 1,
+            average_kda: Some(3.0),
+            recent_champions: vec!["Ahri".to_string()],
+            recent_matches: vec![RecentMatchSummary {
+                game_id: 100,
+                champion_id: Some(103),
+                champion_name: "Ahri".to_string(),
+                queue_name: Some("Ranked Solo/Duo".to_string()),
+                played_at: Some("2026-04-26 00:00:00".to_string()),
+                game_duration_seconds: Some(1800),
+                result: MatchResult::Win,
+                kills: 5,
+                deaths: 1,
+                assists: 9,
+                kda: Some(14.0),
+            }],
+        });
+
+        assert_eq!(champ_select_fingerprint(&snapshot), initial);
+    }
+
+    #[test]
+    fn champ_select_roster_fingerprint_ignores_champion_changes() {
+        let mut snapshot = sample_champ_select_snapshot();
+        let initial = champ_select_roster_fingerprint(&snapshot);
+        let full_initial = champ_select_fingerprint(&snapshot);
+        snapshot.players[0].champion_id = Some(99);
+
+        assert_eq!(champ_select_roster_fingerprint(&snapshot), initial);
+        assert_ne!(champ_select_fingerprint(&snapshot), full_initial);
+    }
+
+    #[test]
+    fn merge_recent_stats_from_cache_preserves_hydrated_rows() {
+        let mut cached = sample_champ_select_snapshot();
+        cached.players[0].recent_stats = Some(ParticipantRecentStats {
+            match_count: 1,
+            average_kda: Some(3.0),
+            recent_champions: vec!["Ahri".to_string()],
+            recent_matches: Vec::new(),
+        });
+        let mut snapshot = cached.clone();
+        snapshot.players[0].champion_id = Some(99);
+        snapshot.players[0].recent_stats = None;
+
+        merge_recent_stats_from_cache(&mut snapshot, &cached);
+
+        assert!(snapshot.players[0].recent_stats.is_some());
     }
 
     #[test]
@@ -1354,6 +1909,22 @@ mod tests {
             std::process::id(),
             stamp
         ))
+    }
+
+    fn sample_champ_select_snapshot() -> ChampSelectSnapshot {
+        ChampSelectSnapshot {
+            players: vec![ChampSelectPlayer {
+                summoner_id: 7,
+                puuid: "puuid-7".to_string(),
+                display_name: "Player#NA1".to_string(),
+                champion_id: Some(103),
+                champion_name: None,
+                team: ChampSelectTeam::Ally,
+                ranked_queues: Vec::new(),
+                recent_stats: None,
+            }],
+            cached_at: "1770000000".to_string(),
+        }
     }
 
     fn sample_post_match_detail() -> PostMatchDetail {

@@ -77,6 +77,10 @@ const en = {
   "settings.autoPick": "Auto pick champion",
   "settings.autoBan": "Auto ban champion",
   "settings.searchChampion": "Search champion",
+  "settings.clearChampion": "Clear",
+  "settings.selectedChampion": "Selected",
+  "settings.noChampionMatches": "No matching champions",
+  "settings.championSearchUnavailable": "Champion catalog is unavailable",
   "settings.loadingChampions": "Loading champions",
   "settings.saveSettings": "Save Settings",
   "settings.currentValues": "Current Values",
@@ -196,6 +200,8 @@ const en = {
   "overlay.unranked": "Unranked",
   "overlay.viewAbilities": "View champion abilities for",
   "overlay.close": "Close",
+  "overlay.refresh": "Refresh",
+  "overlay.refreshFailed": "Refresh failed",
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -276,6 +282,10 @@ const zh: TranslationMap = {
   "settings.autoPick": "自动选择英雄",
   "settings.autoBan": "自动禁用英雄",
   "settings.searchChampion": "搜索英雄",
+  "settings.clearChampion": "清空",
+  "settings.selectedChampion": "已选择",
+  "settings.noChampionMatches": "没有匹配的英雄",
+  "settings.championSearchUnavailable": "英雄列表暂不可用",
   "settings.loadingChampions": "正在加载英雄",
   "settings.saveSettings": "保存设置",
   "settings.currentValues": "当前值",
@@ -395,6 +405,8 @@ const zh: TranslationMap = {
   "overlay.unranked": "未定级",
   "overlay.viewAbilities": "查看英雄技能：",
   "overlay.close": "关闭",
+  "overlay.refresh": "刷新",
+  "overlay.refreshFailed": "刷新失败",
 };
 
 const translations: Record<EffectiveLanguage, TranslationMap> = { en, zh };

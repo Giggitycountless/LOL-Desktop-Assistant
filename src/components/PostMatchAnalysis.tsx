@@ -1,4 +1,4 @@
-import { leagueGameAssetKey, useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
+import { leagueGameAssetKey, useAppCore, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type {
   LeagueGameAssetKind,
   MatchResult,
@@ -22,7 +22,7 @@ export function PostMatchAnalysis({
   onParticipantSelect: (participantId: number) => void;
   participantImages: Record<number, string>;
 }) {
-  const { t } = useAppState();
+  const { t } = useAppCore();
   const maxDamage = Math.max(
     1,
     ...detail.teams.flatMap((team) => team.participants.map((participant) => participant.damageToChampions)),

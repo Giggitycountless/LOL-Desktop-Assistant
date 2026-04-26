@@ -2,7 +2,7 @@
 
 A Windows-first desktop assistant for League of Legends, built as a clean-room Tauri application.
 
-The app currently focuses on local, read-only workflows:
+The app currently focuses on local League Client workflows:
 
 - application health, settings, activity log, import/export tools
 - read-only local League Client status and self account snapshot
@@ -10,19 +10,20 @@ The app currently focuses on local, read-only workflows:
 - recent self match list
 - completed-match analysis with participant tables, scores, damage bars, items, runes, and summoner spells
 - standalone participant profile window for completed matches
+- champion-select history overlay with local recent-match context
+- opt-in lobby automation for ready checks and configured champ-select pick/ban preferences
 - local player notes and tags
 
 ## Safety Boundaries
 
 This project intentionally keeps League Client integration narrow:
 
-- Read-only LCU access only.
 - Localhost League Client access only.
 - Frontend code never reads the lockfile and never calls LCU directly.
 - Lockfile port, password, authorization headers, raw LCU URLs, and PUUIDs must not be exposed to React, DOM, logs, exports, or UI state.
-- No background polling loops.
 - No remote Riot API integration.
-- No queue actions, auto-accept, auto-pick, auto-ban, champ-select automation, overlays, or bots.
+- Automation is limited to user-configured ready-check acceptance and champ-select pick/ban preferences.
+- No queue actions, matchmaking control, gameplay automation, or remote bots.
 - League Client snapshots are not persisted as product data.
 
 Local SQLite data is for app-owned state such as settings, activity entries, and user-created notes/tags.

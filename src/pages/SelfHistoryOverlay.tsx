@@ -3,7 +3,7 @@ import { MouseEvent, useEffect, useState } from "react";
 import type { ChampSelectPlayer, RankedQueueSummary, RecentMatchSummary } from "../backend/types";
 import type { EffectiveLanguage, TranslationKey } from "../i18n";
 import type { LeagueChampionAbilityView, LeagueChampionDetailsView } from "../state/AppStateProvider";
-import { useAppState } from "../state/AppStateProvider";
+import { useAppCore, useChampSelect, useLeagueAssets } from "../state/AppStateProvider";
 
 const TEAM_SIZE = 5;
 const MATCH_ROWS = 10;
@@ -11,43 +11,31 @@ const MATCH_ROWS = 10;
 type T = (key: TranslationKey) => string;
 
 export function SelfHistoryOverlay() {
+  const { effectiveLanguage, t } = useAppCore();
+  const { champSelectSnapshot, refreshChampSelectSnapshot } = useChampSelect();
   const {
-    champSelectSnapshot,
     championDetailsById,
-    effectiveLanguage,
     leagueImages,
-    leagueSelfSnapshot,
     loadLeagueChampionDetails,
-    loadLeagueChampionIcon,
-    loadLeagueProfileIcon,
-    refreshLeagueClient,
-    t,
-  } = useAppState();
+  } = useLeagueAssets();
   const [selectedChampionId, setSelectedChampionId] = useState<number | null>(null);
   const [isChampionDetailsLoading, setIsChampionDetailsLoading] = useState(false);
   const [championDetailsError, setChampionDetailsError] = useState(false);
-  const profileIconId = leagueSelfSnapshot?.summoner?.profileIconId ?? null;
+  const [isRefreshingChampSelect, setIsRefreshingChampSelect] = useState(false);
+  const [refreshFailed, setRefreshFailed] = useState(false);
   const players = champSelectSnapshot?.players ?? [];
   const allies = fillTeam(players.filter((player) => player.team === "ally"));
   const enemies = fillTeam(players.filter((player) => player.team === "enemy"));
   const selectedChampionDetails = selectedChampionId ? championDetailsById[selectedChampionId] : undefined;
 
   useEffect(() => {
-    void refreshLeagueClient({ matchLimit: 6 });
-  }, [refreshLeagueClient]);
-
-  useEffect(() => {
-    void loadLeagueProfileIcon(profileIconId);
-  }, [loadLeagueProfileIcon, profileIconId]);
-
-  useEffect(() => {
-    for (const player of players) {
-      void loadLeagueChampionIcon(player.championId);
-      for (const match of player.recentStats?.recentMatches ?? []) {
-        void loadLeagueChampionIcon(match.championId);
-      }
+    if (!refreshFailed) {
+      return;
     }
-  }, [loadLeagueChampionIcon, players]);
+
+    const timer = window.setTimeout(() => setRefreshFailed(false), 2500);
+    return () => window.clearTimeout(timer);
+  }, [refreshFailed]);
 
   async function handleChampionSelect(event: MouseEvent, championId: number | null | undefined) {
     event.stopPropagation();
@@ -67,12 +55,25 @@ export function SelfHistoryOverlay() {
     setChampionDetailsError(!didLoad);
   }
 
+  async function handleRefreshChampSelect(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (isRefreshingChampSelect) {
+      return;
+    }
+
+    setRefreshFailed(false);
+    setIsRefreshingChampSelect(true);
+    const didRefresh = await refreshChampSelectSnapshot();
+    setIsRefreshingChampSelect(false);
+    setRefreshFailed(!didRefresh);
+  }
+
   return (
     <main
-      className="relative min-h-screen overflow-hidden bg-[#eef1f5] p-2 text-slate-700"
+      className="relative flex h-screen flex-col overflow-hidden bg-[#eef1f5] p-2 text-slate-700"
       onClick={() => setSelectedChampionId(null)}
     >
-      <div className="grid h-[calc(100vh-4rem)] grid-cols-2 gap-2">
+      <div className="grid min-h-0 flex-1 grid-cols-2 gap-2">
         <TeamBoard
           effectiveLanguage={effectiveLanguage}
           imageUrls={leagueImages.championIcons}
@@ -91,6 +92,23 @@ export function SelfHistoryOverlay() {
           t={t}
           tone="ally"
         />
+      </div>
+      <div className="absolute right-2 top-2 z-10 flex items-center gap-2">
+        {refreshFailed && (
+          <span className="rounded border border-rose-100 bg-white/95 px-2 py-1 text-xs font-bold text-rose-500 shadow-sm">
+            {t("overlay.refreshFailed")}
+          </span>
+        )}
+        <button
+          aria-label={t("overlay.refresh")}
+          className="flex h-9 w-9 items-center justify-center rounded border border-slate-200 bg-white/95 text-slate-500 shadow-sm transition hover:bg-slate-50 hover:text-blue-500 disabled:cursor-wait disabled:opacity-70"
+          disabled={isRefreshingChampSelect}
+          onClick={handleRefreshChampSelect}
+          title={t("overlay.refresh")}
+          type="button"
+        >
+          <RefreshIcon isSpinning={isRefreshingChampSelect} />
+        </button>
       </div>
       {players.length === 0 && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 rounded-md border border-slate-200 bg-white/95 px-5 py-3 text-center text-sm font-bold text-slate-500 shadow-sm">
@@ -111,6 +129,25 @@ export function SelfHistoryOverlay() {
       )}
       <SummaryBar allies={allies} enemies={enemies} t={t} />
     </main>
+  );
+}
+
+function RefreshIcon({ isSpinning }: { isSpinning: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className={isSpinning ? "h-4 w-4 animate-spin" : "h-4 w-4"}
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path
+        d="M20 11a8 8 0 0 0-14.5-4.6M4 4v5h5M4 13a8 8 0 0 0 14.5 4.6M20 20v-5h-5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2.2"
+      />
+    </svg>
   );
 }
 
@@ -346,7 +383,7 @@ function SummaryBar({
   const enemyGames = teamGames(enemies);
 
   return (
-    <div className="mt-2 flex gap-3">
+    <div className="mt-2 flex shrink-0 gap-3">
       <SummaryCard label={t("overlay.allyWins")} tone="ally" value={`${allyWins}/${allyGames}`} />
       <SummaryCard label={t("overlay.enemyWins")} tone="enemy" value={`${enemyWins}/${enemyGames}`} />
     </div>

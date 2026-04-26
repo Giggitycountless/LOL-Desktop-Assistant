@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { PostMatchAnalysis } from "./PostMatchAnalysis";
-import { useAppState, type LeagueGameAssetView } from "../state/AppStateProvider";
+import { useAppCore, useLeagueAssets, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type { MatchResult, PostMatchDetail, RecentMatchSummary } from "../backend/types";
 import type { TranslationKey } from "../i18n";
 import { emitParticipantProfileChanged, openParticipantProfileWindow } from "../windows/participantProfileWindow";
@@ -23,15 +23,13 @@ export function ParticipantProfilePanel({
   sticky?: boolean;
 }) {
   const {
-    leagueImages,
-    loadLeagueChampionIcon,
-    loadLeagueProfileIcon,
     loadParticipantProfile,
     participantProfiles,
     savePlayerNote,
     clearPlayerNote,
     t,
-  } = useAppState();
+  } = useAppCore();
+  const { leagueImages, loadLeagueChampionIcon, loadLeagueProfileIcon } = useLeagueAssets();
   const profile = selection ? participantProfiles[participantProfileKey(selection.gameId, selection.participantId)] : undefined;
   const [noteDraft, setNoteDraft] = useState("");
   const [tagsDraft, setTagsDraft] = useState("");
@@ -175,13 +173,11 @@ export function ParticipantProfilePanel({
 
 function RecentMatchesList({ matches }: { matches: RecentMatchSummary[] }) {
   const {
-    leagueImages,
-    loadLeagueChampionIcon,
-    loadLeagueGameAsset,
     loadPostMatchDetail,
     postMatchDetails,
     t,
-  } = useAppState();
+  } = useAppCore();
+  const { leagueImages, loadLeagueChampionIcon, loadLeagueGameAsset } = useLeagueAssets();
   const [expandedGameId, setExpandedGameId] = useState<number | null>(null);
   const expandedDetail = expandedGameId ? postMatchDetails[expandedGameId] : undefined;
 
@@ -266,7 +262,7 @@ function RecentMatchRow({
   participantImages: Record<number, string>;
   t: T;
 }) {
-  const { leagueImages } = useAppState();
+  const { leagueImages } = useLeagueAssets();
   const imageUrl = match.championId ? leagueImages.championIcons[match.championId] : undefined;
 
   return (
@@ -353,7 +349,7 @@ function Detail({ label, value }: { label: string; value: string }) {
 }
 
 function ResultBadge({ result }: { result: MatchResult }) {
-  const { t } = useAppState();
+  const { t } = useAppCore();
   const tone =
     result === "win"
       ? "border-emerald-200 bg-emerald-50 text-emerald-800"

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { useAppState } from "../state/AppStateProvider";
+import { useAppCore, useLeagueAssets } from "../state/AppStateProvider";
 import type { RankedChampionDataStatus, RankedChampionLane, RankedChampionSort, RankedChampionStat } from "../backend/types";
 import type { TranslationKey } from "../i18n";
 
@@ -24,13 +24,12 @@ const sorts: Array<{ id: RankedChampionSort; label: string; metric: keyof Ranked
 export function RankedChampions() {
   const {
     isRankedChampionStatsLoading,
-    leagueImages,
-    loadLeagueChampionIcon,
     loadRankedChampionStats,
     rankedChampionStats,
     refreshRankedChampionStats,
     t,
-  } = useAppState();
+  } = useAppCore();
+  const { leagueImages, loadLeagueChampionIcon } = useLeagueAssets();
   const [lane, setLane] = useState<RankedChampionLane>("top");
   const [sortBy, setSortBy] = useState<RankedChampionSort>("overall");
   const activeSort = useMemo(() => sorts.find((sort) => sort.id === sortBy) ?? sorts[0], [sortBy]);

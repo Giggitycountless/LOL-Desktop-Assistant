@@ -1,12 +1,15 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
 
 import { fetchLeagueChampionCatalog } from "../backend/leagueClient";
 import type { AppLanguagePreference, LeagueChampionSummary, SaveSettingsInput, StartupPage } from "../backend/types";
 import type { TranslationKey } from "../i18n";
-import { useAppState } from "../state/AppStateProvider";
+import { useAppCore } from "../state/AppStateProvider";
 
 const MIN_ACTIVITY_LIMIT = 1;
 const MAX_ACTIVITY_LIMIT = 500;
+const CHAMPION_RESULT_LIMIT = 8;
+
+type Translator = (key: TranslationKey) => string;
 
 export function Settings() {
   const {
@@ -16,7 +19,7 @@ export function Settings() {
     importLocalData,
     clearActivityEntries,
     t,
-  } = useAppState();
+  } = useAppCore();
   const [draft, setDraft] = useState<SaveSettingsInput>({
     startupPage: "dashboard",
     language: "system",
@@ -83,7 +86,9 @@ export function Settings() {
     };
   }, []);
 
-  const validationMessage = useMemo(() => validateDraft(draft, t), [draft, t]);
+  const activityValidationMessage = useMemo(() => validateActivityLimit(draft, t), [draft.activityLimit, t]);
+  const automationValidationMessage = useMemo(() => validateAutomationDraft(draft, t), [draft, t]);
+  const validationMessage = activityValidationMessage ?? automationValidationMessage;
   const hasUnsavedChanges = Boolean(
     persisted &&
       (draft.startupPage !== persisted.startupPage ||
@@ -255,70 +260,48 @@ export function Settings() {
                   }
                   className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100"
                 />
-                {validationMessage && <span className="text-sm font-medium text-amber-700">{validationMessage}</span>}
+                {activityValidationMessage && (
+                  <span className="text-sm font-medium text-amber-700">{activityValidationMessage}</span>
+                )}
               </label>
 
-              <div className="grid gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-4">
-                <h3 className="text-sm font-semibold text-zinc-950">{t("settings.lobbyAutomation")}</h3>
-                <label className="flex items-center justify-between gap-4">
-                  <span className="text-sm font-medium text-zinc-700">{t("settings.autoAccept")}</span>
-                  <input
-                    type="checkbox"
-                    checked={draft.autoAcceptEnabled}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        autoAcceptEnabled: event.target.checked,
-                      }))
-                    }
-                    className="h-5 w-5 accent-rose-700"
-                  />
-                </label>
-
-                <AutomationChampionPicker
-                  label={t("settings.autoPick")}
-                  loadingLabel={t("settings.loadingChampions")}
-                  searchLabel={t("settings.searchChampion")}
-                  enabled={draft.autoPickEnabled}
-                  championId={draft.autoPickChampionId}
-                  champions={champions}
-                  isLoading={isLoadingChampions}
-                  onEnabledChange={(enabled) =>
-                    setDraft((current) => ({
-                      ...current,
-                      autoPickEnabled: enabled,
-                    }))
-                  }
-                  onChampionChange={(championId) =>
-                    setDraft((current) => ({
-                      ...current,
-                      autoPickChampionId: championId,
-                    }))
-                  }
-                />
-
-                <AutomationChampionPicker
-                  label={t("settings.autoBan")}
-                  loadingLabel={t("settings.loadingChampions")}
-                  searchLabel={t("settings.searchChampion")}
-                  enabled={draft.autoBanEnabled}
-                  championId={draft.autoBanChampionId}
-                  champions={champions}
-                  isLoading={isLoadingChampions}
-                  onEnabledChange={(enabled) =>
-                    setDraft((current) => ({
-                      ...current,
-                      autoBanEnabled: enabled,
-                    }))
-                  }
-                  onChampionChange={(championId) =>
-                    setDraft((current) => ({
-                      ...current,
-                      autoBanChampionId: championId,
-                    }))
-                  }
-                />
-              </div>
+              <RoomAutomationPanel
+                draft={draft}
+                champions={champions}
+                isLoadingChampions={isLoadingChampions}
+                validationMessage={automationValidationMessage}
+                onAutoAcceptChange={(enabled) =>
+                  setDraft((current) => ({
+                    ...current,
+                    autoAcceptEnabled: enabled,
+                  }))
+                }
+                onAutoPickEnabledChange={(enabled) =>
+                  setDraft((current) => ({
+                    ...current,
+                    autoPickEnabled: enabled,
+                  }))
+                }
+                onAutoPickChampionChange={(championId) =>
+                  setDraft((current) => ({
+                    ...current,
+                    autoPickChampionId: championId,
+                  }))
+                }
+                onAutoBanEnabledChange={(enabled) =>
+                  setDraft((current) => ({
+                    ...current,
+                    autoBanEnabled: enabled,
+                  }))
+                }
+                onAutoBanChampionChange={(championId) =>
+                  setDraft((current) => ({
+                    ...current,
+                    autoBanChampionId: championId,
+                  }))
+                }
+                t={t}
+              />
 
               <button
                 type="submit"
@@ -420,73 +403,329 @@ function SettingRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function RoomAutomationPanel({
+  draft,
+  champions,
+  isLoadingChampions,
+  validationMessage,
+  onAutoAcceptChange,
+  onAutoPickEnabledChange,
+  onAutoPickChampionChange,
+  onAutoBanEnabledChange,
+  onAutoBanChampionChange,
+  t,
+}: {
+  draft: SaveSettingsInput;
+  champions: LeagueChampionSummary[];
+  isLoadingChampions: boolean;
+  validationMessage: string | null;
+  onAutoAcceptChange: (enabled: boolean) => void;
+  onAutoPickEnabledChange: (enabled: boolean) => void;
+  onAutoPickChampionChange: (championId: number | null) => void;
+  onAutoBanEnabledChange: (enabled: boolean) => void;
+  onAutoBanChampionChange: (championId: number | null) => void;
+  t: Translator;
+}) {
+  const statusItems = [
+    {
+      label: t("settings.autoAcceptShort"),
+      value: draft.autoAcceptEnabled ? t("common.on") : t("common.off"),
+      active: draft.autoAcceptEnabled,
+    },
+    {
+      label: t("settings.autoPickShort"),
+      value: automationSummary(draft.autoPickEnabled, draft.autoPickChampionId, champions, t),
+      active: draft.autoPickEnabled && Boolean(draft.autoPickChampionId),
+    },
+    {
+      label: t("settings.autoBanShort"),
+      value: automationSummary(draft.autoBanEnabled, draft.autoBanChampionId, champions, t),
+      active: draft.autoBanEnabled && Boolean(draft.autoBanChampionId),
+    },
+  ];
+
+  return (
+    <section className="grid gap-4 rounded-md border border-zinc-200 bg-zinc-50 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-zinc-950">{t("settings.lobbyAutomation")}</h3>
+        </div>
+        <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-3">
+          {statusItems.map((item) => (
+            <div
+              key={item.label}
+              className={[
+                "min-w-0 rounded-md border px-3 py-2",
+                item.active ? "border-rose-200 bg-white" : "border-zinc-200 bg-zinc-100",
+              ].join(" ")}
+            >
+              <div className="text-xs font-medium text-zinc-500">{item.label}</div>
+              <div className="truncate text-sm font-semibold text-zinc-950">{item.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <AutomationToggleRow
+        label={t("settings.autoAccept")}
+        enabled={draft.autoAcceptEnabled}
+        onEnabledChange={onAutoAcceptChange}
+      />
+
+      <div className="grid gap-3 xl:grid-cols-2">
+        <AutomationChampionPicker
+          label={t("settings.autoPick")}
+          enabled={draft.autoPickEnabled}
+          championId={draft.autoPickChampionId}
+          champions={champions}
+          isLoading={isLoadingChampions}
+          onEnabledChange={onAutoPickEnabledChange}
+          onChampionChange={onAutoPickChampionChange}
+          t={t}
+        />
+        <AutomationChampionPicker
+          label={t("settings.autoBan")}
+          enabled={draft.autoBanEnabled}
+          championId={draft.autoBanChampionId}
+          champions={champions}
+          isLoading={isLoadingChampions}
+          onEnabledChange={onAutoBanEnabledChange}
+          onChampionChange={onAutoBanChampionChange}
+          t={t}
+        />
+      </div>
+
+      {validationMessage && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+          {validationMessage}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AutomationToggleRow({
+  label,
+  enabled,
+  onEnabledChange,
+}: {
+  label: string;
+  enabled: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-md border border-zinc-200 bg-white px-3 py-3">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-zinc-900">{label}</div>
+      </div>
+      <ToggleSwitch checked={enabled} label={label} onChange={onEnabledChange} />
+    </div>
+  );
+}
+
+function ToggleSwitch({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className={[
+        "relative h-7 w-12 flex-none rounded-full transition focus:outline-none focus:ring-2 focus:ring-rose-100",
+        checked ? "bg-rose-700" : "bg-zinc-300",
+      ].join(" ")}
+    >
+      <span
+        className={[
+          "absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition",
+          checked ? "left-6" : "left-1",
+        ].join(" ")}
+      />
+    </button>
+  );
+}
+
 function AutomationChampionPicker({
   label,
-  loadingLabel,
-  searchLabel,
   enabled,
   championId,
   champions,
   isLoading,
   onEnabledChange,
   onChampionChange,
+  t,
 }: {
   label: string;
-  loadingLabel: string;
-  searchLabel: string;
   enabled: boolean;
   championId: number | null;
   champions: LeagueChampionSummary[];
   isLoading: boolean;
   onEnabledChange: (enabled: boolean) => void;
   onChampionChange: (championId: number | null) => void;
+  t: Translator;
 }) {
-  const listId = `${label.toLowerCase().replace(/\s+/g, "-")}-list`;
+  const listId = useId();
   const [query, setQuery] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const selectedChampion = champions.find((champion) => champion.championId === championId) ?? null;
+  const filteredChampions = useMemo(() => filterChampions(query, champions), [champions, query]);
+  const isSearchDisabled = !enabled || isLoading || champions.length === 0;
 
   useEffect(() => {
-    const selected = champions.find((champion) => champion.championId === championId);
-    setQuery(selected ? championLabel(selected) : "");
-  }, [championId, champions]);
+    setActiveIndex(0);
+  }, [filteredChampions]);
 
   function handleQueryChange(value: string) {
     setQuery(value);
-    const champion = findChampion(value, champions);
-    onChampionChange(champion?.championId ?? null);
+    setIsOpen(true);
+  }
+
+  function selectChampion(champion: LeagueChampionSummary) {
+    onChampionChange(champion.championId);
+    setQuery("");
+    setIsOpen(false);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (!isOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      setIsOpen(true);
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((current) => Math.min(current + 1, Math.max(filteredChampions.length - 1, 0)));
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => Math.max(current - 1, 0));
+      return;
+    }
+
+    if (event.key === "Enter") {
+      const activeChampion = filteredChampions[activeIndex];
+      if (activeChampion) {
+        event.preventDefault();
+        selectChampion(activeChampion);
+      }
+      return;
+    }
+
+    if (event.key === "Escape") {
+      setIsOpen(false);
+    }
   }
 
   return (
-    <div className="grid gap-2 rounded-md border border-zinc-200 bg-white px-3 py-3">
-      <label className="flex items-center justify-between gap-4">
-        <span className="text-sm font-medium text-zinc-700">{label}</span>
+    <div className="grid gap-3 rounded-md border border-zinc-200 bg-white px-3 py-3">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-900">{label}</div>
+        </div>
+        <ToggleSwitch checked={enabled} label={label} onChange={onEnabledChange} />
+      </div>
+
+      <div className="relative grid gap-2">
+        <label className="text-xs font-medium uppercase text-zinc-500">{t("settings.searchChampion")}</label>
         <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(event) => onEnabledChange(event.target.checked)}
-          className="h-5 w-5 accent-rose-700"
-        />
-      </label>
-      <div className="grid gap-1">
-        <input
+          aria-controls={listId}
+          aria-expanded={enabled && isOpen && !isSearchDisabled}
+          aria-label={t("settings.searchChampion")}
+          role="combobox"
           type="search"
-          list={listId}
           value={query}
-          disabled={!enabled}
-          placeholder={isLoading ? loadingLabel : searchLabel}
+          disabled={isSearchDisabled}
+          placeholder={
+            isLoading
+              ? t("settings.loadingChampions")
+              : selectedChampion
+                ? selectedChampion.championName
+                : t("settings.searchChampion")
+          }
+          onBlur={() => window.setTimeout(() => setIsOpen(false), 120)}
           onChange={(event) => handleQueryChange(event.target.value)}
-          className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400"
+          onFocus={() => setIsOpen(true)}
+          onKeyDown={handleKeyDown}
+          className={[
+            "h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none focus:border-rose-700 focus:ring-2 focus:ring-rose-100 disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-400",
+            enabled && championId ? "pr-20" : "",
+          ].join(" ")}
         />
-        <datalist id={listId}>
-          {champions.map((champion) => (
-            <option key={champion.championId} value={championLabel(champion)} />
-          ))}
-        </datalist>
+
+        {enabled && championId && (
+          <button
+            type="button"
+            onClick={() => {
+              setQuery("");
+              onChampionChange(null);
+              setIsOpen(true);
+            }}
+            className="absolute right-2 top-7 inline-flex h-6 items-center rounded border border-zinc-200 bg-zinc-50 px-2 text-xs font-semibold text-zinc-600 transition hover:bg-zinc-100"
+          >
+            {t("settings.clearChampion")}
+          </button>
+        )}
+
+        {enabled && isOpen && !isSearchDisabled && (
+          <div
+            className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-md border border-zinc-200 bg-white p-1 shadow-lg"
+            id={listId}
+            role="listbox"
+          >
+            {filteredChampions.length > 0 ? (
+              filteredChampions.map((champion, index) => (
+                <button
+                  aria-selected={champion.championId === championId}
+                  key={champion.championId}
+                  role="option"
+                  type="button"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    selectChampion(champion);
+                  }}
+                  className={[
+                    "flex w-full items-center justify-between gap-3 rounded px-2 py-2 text-left text-sm transition hover:bg-rose-50",
+                    champion.championId === championId || index === activeIndex
+                      ? "bg-rose-50 text-rose-800"
+                      : "text-zinc-800",
+                  ].join(" ")}
+                >
+                  <span className="truncate font-medium">{champion.championName}</span>
+                  <span className="text-xs font-semibold text-zinc-400">{champion.championId}</span>
+                </button>
+              ))
+            ) : (
+              <div className="px-2 py-3 text-sm text-zinc-500">{t("settings.noChampionMatches")}</div>
+            )}
+          </div>
+        )}
+
+        {enabled && !isLoading && champions.length === 0 && (
+          <div className="text-sm text-amber-700">{t("settings.championSearchUnavailable")}</div>
+        )}
+        {enabled && !championId && <div className="text-sm text-zinc-500">{t("settings.noChampion")}</div>}
+        {enabled && selectedChampion && (
+          <div className="rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5 text-sm font-medium text-emerald-700">
+            {t("settings.selectedChampion")}: {selectedChampion.championName}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function validateDraft(draft: SaveSettingsInput, t: (key: TranslationKey) => string) {
+function validateActivityLimit(draft: SaveSettingsInput, t: Translator) {
   if (!Number.isInteger(draft.activityLimit)) {
     return t("settings.validationInteger");
   }
@@ -495,6 +734,10 @@ function validateDraft(draft: SaveSettingsInput, t: (key: TranslationKey) => str
     return `${t("settings.activityLimit")} ${MIN_ACTIVITY_LIMIT}-${MAX_ACTIVITY_LIMIT}`;
   }
 
+  return null;
+}
+
+function validateAutomationDraft(draft: SaveSettingsInput, t: Translator) {
   if (draft.autoPickEnabled && !draft.autoPickChampionId) {
     return t("settings.validationPick");
   }
@@ -506,18 +749,21 @@ function validateDraft(draft: SaveSettingsInput, t: (key: TranslationKey) => str
   return null;
 }
 
-function findChampion(value: string, champions: LeagueChampionSummary[]) {
+function filterChampions(value: string, champions: LeagueChampionSummary[]) {
   const normalized = value.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
+  const filtered = normalized
+    ? champions.filter(
+        (champion) =>
+          champion.championName.toLowerCase().includes(normalized) ||
+          String(champion.championId).includes(normalized) ||
+          championLabel(champion).toLowerCase().includes(normalized),
+      )
+    : champions;
 
-  return (
-    champions.find((champion) => championLabel(champion).toLowerCase() === normalized) ??
-    champions.find((champion) => champion.championName.toLowerCase() === normalized) ??
-    champions.find((champion) => String(champion.championId) === normalized) ??
-    null
-  );
+  return filtered
+    .slice()
+    .sort((left, right) => left.championName.localeCompare(right.championName))
+    .slice(0, CHAMPION_RESULT_LIMIT);
 }
 
 function championLabel(champion: LeagueChampionSummary) {

@@ -20,6 +20,7 @@ import {
 import { saveSettings } from "../backend/settings";
 import { createTranslator, resolveEffectiveLanguage, type EffectiveLanguage, type TranslationKey } from "../i18n";
 import { fetchAppState } from "../backend/system";
+import { listenWithCleanup } from "../backend/events";
 import type {
   ActivityEntry,
   ActivityListInput,
@@ -52,6 +53,8 @@ type LeagueImageUrls = {
   gameAssets: Record<string, LeagueGameAssetView>;
 };
 
+export type AppWindowMode = "main" | "overlay" | "participant";
+
 export type LeagueGameAssetView = Omit<LeagueGameAsset, "image"> & {
   imageUrl: string;
 };
@@ -66,15 +69,16 @@ export type LeagueChampionDetailsView = Omit<LeagueChampionDetails, "squarePortr
 };
 
 type AppStateContextValue = {
+  // Compatibility hook shape. Prefer the narrower hooks below for new UI code.
+} & AppCoreContextValue & LeagueAssetsContextValue & ChampSelectContextValue;
+
+type AppCoreContextValue = {
   snapshot: AppSnapshot | null;
   activityEntries: ActivityEntry[];
   leagueSelfSnapshot: LeagueSelfSnapshot | null;
-  champSelectSnapshot: ChampSelectSnapshot | null;
   rankedChampionStats: RankedChampionStatsResponse | null;
   postMatchDetails: Record<number, PostMatchDetail>;
   participantProfiles: Record<string, ParticipantPublicProfile>;
-  championDetailsById: Record<number, LeagueChampionDetailsView>;
-  leagueImages: LeagueImageUrls;
   isLoading: boolean;
   isActivityLoading: boolean;
   isLeagueClientLoading: boolean;
@@ -95,19 +99,32 @@ type AppStateContextValue = {
   clearActivityEntries: (confirm: boolean) => Promise<boolean>;
   exportLocalData: () => Promise<string | null>;
   importLocalData: (json: string) => Promise<boolean>;
-  loadLeagueProfileIcon: (profileIconId: number | null | undefined) => Promise<boolean>;
-  loadLeagueChampionIcon: (championId: number | null | undefined) => Promise<boolean>;
-  loadLeagueChampionDetails: (championId: number | null | undefined) => Promise<boolean>;
-  loadLeagueGameAsset: (kind: LeagueGameAssetKind, assetId: number | null | undefined) => Promise<boolean>;
   loadPostMatchDetail: (gameId: number) => Promise<boolean>;
   loadParticipantProfile: (input: ParticipantPublicProfileInput) => Promise<boolean>;
   savePlayerNote: (input: SavePlayerNoteInput) => Promise<PlayerNoteView | null>;
   clearPlayerNote: (gameId: number, participantId: number) => Promise<boolean>;
 };
 
-const AppStateContext = createContext<AppStateContextValue | null>(null);
+type LeagueAssetsContextValue = {
+  championDetailsById: Record<number, LeagueChampionDetailsView>;
+  leagueImages: LeagueImageUrls;
+  loadLeagueProfileIcon: (profileIconId: number | null | undefined) => Promise<boolean>;
+  loadLeagueChampionIcon: (championId: number | null | undefined) => Promise<boolean>;
+  loadLeagueChampionDetails: (championId: number | null | undefined) => Promise<boolean>;
+  loadLeagueGameAsset: (kind: LeagueGameAssetKind, assetId: number | null | undefined) => Promise<boolean>;
+};
 
-export function AppStateProvider({ children }: { children: ReactNode }) {
+type ChampSelectContextValue = {
+  champSelectSnapshot: ChampSelectSnapshot | null;
+  refreshChampSelectSnapshot: () => Promise<boolean>;
+};
+
+const AppStateContext = createContext<AppStateContextValue | null>(null);
+const AppCoreContext = createContext<AppCoreContextValue | null>(null);
+const LeagueAssetsContext = createContext<LeagueAssetsContextValue | null>(null);
+const ChampSelectContext = createContext<ChampSelectContextValue | null>(null);
+
+export function AppStateProvider({ children, mode = "main" }: { children: ReactNode; mode?: AppWindowMode }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activityEntries, setActivityEntries] = useState<ActivityEntry[]>([]);
   const [leagueSelfSnapshot, setLeagueSelfSnapshot] = useState<LeagueSelfSnapshot | null>(null);
@@ -119,6 +136,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {}, gameAssets: {} });
   const championDetailsRef = useRef<Record<number, LeagueChampionDetailsView>>({});
   const pendingImageKeysRef = useRef(new Set<string>());
+  const imageFlushRef = useRef<number | null>(null);
   const champSelectFingerprintRef = useRef("");
   const [leagueImages, setLeagueImages] = useState<LeagueImageUrls>(imageUrlsRef.current);
   const [isLoading, setIsLoading] = useState(true);
@@ -129,6 +147,17 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const languagePreference = snapshot?.settings.language ?? "system";
   const effectiveLanguage = useMemo(() => resolveEffectiveLanguage(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(effectiveLanguage), [effectiveLanguage]);
+
+  const scheduleLeagueImagesUpdate = useCallback(() => {
+    if (imageFlushRef.current !== null) {
+      return;
+    }
+
+    imageFlushRef.current = window.requestAnimationFrame(() => {
+      imageFlushRef.current = null;
+      setLeagueImages(imageUrlsRef.current);
+    });
+  }, []);
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
@@ -208,8 +237,10 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh();
-    void refreshLeagueClientAction({ matchLimit: 6 });
-  }, [refresh, refreshLeagueClientAction]);
+    if (mode === "main") {
+      void refreshLeagueClientAction({ matchLimit: 6 });
+    }
+  }, [mode, refresh, refreshLeagueClientAction]);
 
   useEffect(() => {
     return () => {
@@ -231,6 +262,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             URL.revokeObjectURL(ability.iconUrl);
           }
         }
+      }
+      if (imageFlushRef.current !== null) {
+        window.cancelAnimationFrame(imageFlushRef.current);
       }
     };
   }, []);
@@ -358,14 +392,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           [profileIconId]: url,
         },
       };
-      setLeagueImages(imageUrlsRef.current);
+      scheduleLeagueImagesUpdate();
       return true;
     } catch {
       return false;
     } finally {
       pendingImageKeysRef.current.delete(key);
     }
-  }, []);
+  }, [scheduleLeagueImagesUpdate]);
 
   const loadLeagueChampionIconAction = useCallback(async (championId: number | null | undefined) => {
     if (!championId || imageUrlsRef.current.championIcons[championId]) {
@@ -388,14 +422,38 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           [championId]: url,
         },
       };
-      setLeagueImages(imageUrlsRef.current);
+      scheduleLeagueImagesUpdate();
       return true;
     } catch {
       return false;
     } finally {
       pendingImageKeysRef.current.delete(key);
     }
-  }, []);
+  }, [scheduleLeagueImagesUpdate]);
+
+  const applyChampSelectSnapshotAction = useCallback((snapshot: ChampSelectSnapshot) => {
+    const nextFingerprint = champSelectFingerprint(snapshot);
+    if (champSelectFingerprintRef.current === nextFingerprint) {
+      return;
+    }
+    champSelectFingerprintRef.current = nextFingerprint;
+    setChampSelectSnapshot(snapshot);
+    for (const player of snapshot.players) {
+      void loadLeagueChampionIconAction(player.championId);
+      for (const match of player.recentStats?.recentMatches ?? []) {
+        void loadLeagueChampionIconAction(match.championId);
+      }
+    }
+  }, [loadLeagueChampionIconAction]);
+
+  const refreshChampSelectSnapshotAction = useCallback(async () => {
+    try {
+      applyChampSelectSnapshotAction(await fetchChampSelectSnapshot(6));
+      return true;
+    } catch {
+      return false;
+    }
+  }, [applyChampSelectSnapshotAction]);
 
   const loadLeagueChampionDetailsAction = useCallback(async (championId: number | null | undefined) => {
     if (!championId || championDetailsRef.current[championId]) {
@@ -425,49 +483,26 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    let isMounted = true;
-    let isRefreshing = false;
-
-    async function refreshChampSelectSnapshot() {
-      if (isRefreshing) {
-        return;
-      }
-
-      isRefreshing = true;
-      try {
-        const snapshot = await fetchChampSelectSnapshot(6);
-        if (!isMounted) {
-          return;
-        }
-        const nextFingerprint = champSelectFingerprint(snapshot);
-        if (champSelectFingerprintRef.current === nextFingerprint) {
-          return;
-        }
-        champSelectFingerprintRef.current = nextFingerprint;
-        setChampSelectSnapshot(snapshot);
-        for (const player of snapshot.players) {
-          void loadLeagueChampionIconAction(player.championId);
-        }
-      } catch {
-        if (isMounted && champSelectFingerprintRef.current) {
-          champSelectFingerprintRef.current = "";
-          setChampSelectSnapshot(null);
-        }
-      } finally {
-        isRefreshing = false;
-      }
+    if (mode !== "overlay") {
+      return;
     }
 
-    void refreshChampSelectSnapshot();
-    const intervalId = window.setInterval(() => {
-      void refreshChampSelectSnapshot();
-    }, 5000);
+    const cleanupUpdate = listenWithCleanup<ChampSelectSnapshot>("champ-select-update", (event) => {
+      applyChampSelectSnapshotAction(event.payload);
+    });
+
+    const cleanupClear = listenWithCleanup<void>("champ-select-clear", () => {
+      champSelectFingerprintRef.current = "";
+      setChampSelectSnapshot(null);
+    });
+
+    void refreshChampSelectSnapshotAction();
 
     return () => {
-      isMounted = false;
-      window.clearInterval(intervalId);
+      cleanupUpdate();
+      cleanupClear();
     };
-  }, [loadLeagueChampionIconAction]);
+  }, [applyChampSelectSnapshotAction, mode, refreshChampSelectSnapshotAction]);
 
   const loadLeagueGameAssetAction = useCallback(async (kind: LeagueGameAssetKind, assetId: number | null | undefined) => {
     if (!assetId) {
@@ -496,14 +531,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           },
         },
       };
-      setLeagueImages(imageUrlsRef.current);
+      scheduleLeagueImagesUpdate();
       return true;
     } catch {
       return false;
     } finally {
       pendingImageKeysRef.current.delete(key);
     }
-  }, []);
+  }, [scheduleLeagueImagesUpdate]);
 
   const loadPostMatchDetailAction = useCallback(async (gameId: number) => {
     try {
@@ -553,17 +588,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }
   }, [loadParticipantProfileAction, loadPostMatchDetailAction, t]);
 
-  const value = useMemo<AppStateContextValue>(
+  const coreValue = useMemo<AppCoreContextValue>(
     () => ({
       snapshot,
       activityEntries,
       leagueSelfSnapshot,
-      champSelectSnapshot,
       rankedChampionStats,
       postMatchDetails,
       participantProfiles,
-      championDetailsById,
-      leagueImages,
       isLoading,
       isActivityLoading,
       isLeagueClientLoading,
@@ -584,10 +616,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       clearActivityEntries: clearActivityEntriesAction,
       exportLocalData: exportLocalDataAction,
       importLocalData: importLocalDataAction,
-      loadLeagueProfileIcon: loadLeagueProfileIconAction,
-      loadLeagueChampionIcon: loadLeagueChampionIconAction,
-      loadLeagueChampionDetails: loadLeagueChampionDetailsAction,
-      loadLeagueGameAsset: loadLeagueGameAssetAction,
       loadPostMatchDetail: loadPostMatchDetailAction,
       loadParticipantProfile: loadParticipantProfileAction,
       savePlayerNote: savePlayerNoteAction,
@@ -595,8 +623,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     }),
     [
       activityEntries,
-      champSelectSnapshot,
-      championDetailsById,
       clearActivityEntriesAction,
       clearPlayerNoteAction,
       createActivityNoteAction,
@@ -609,14 +635,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       isLeagueClientLoading,
       isRankedChampionStatsLoading,
       isLoading,
-      leagueImages,
       leagueSelfSnapshot,
       loadRankedChampionStatsAction,
-      loadLeagueChampionIconAction,
-      loadLeagueChampionDetailsAction,
-      loadLeagueGameAssetAction,
       loadActivityEntriesAction,
-      loadLeagueProfileIconAction,
       loadParticipantProfileAction,
       loadPostMatchDetailAction,
       participantProfiles,
@@ -633,11 +654,85 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
+  const assetsValue = useMemo<LeagueAssetsContextValue>(
+    () => ({
+      championDetailsById,
+      leagueImages,
+      loadLeagueProfileIcon: loadLeagueProfileIconAction,
+      loadLeagueChampionIcon: loadLeagueChampionIconAction,
+      loadLeagueChampionDetails: loadLeagueChampionDetailsAction,
+      loadLeagueGameAsset: loadLeagueGameAssetAction,
+    }),
+    [
+      championDetailsById,
+      leagueImages,
+      loadLeagueChampionDetailsAction,
+      loadLeagueChampionIconAction,
+      loadLeagueGameAssetAction,
+      loadLeagueProfileIconAction,
+    ],
+  );
+
+  const champSelectValue = useMemo<ChampSelectContextValue>(
+    () => ({
+      champSelectSnapshot,
+      refreshChampSelectSnapshot: refreshChampSelectSnapshotAction,
+    }),
+    [champSelectSnapshot, refreshChampSelectSnapshotAction],
+  );
+
+  const legacyValue = useMemo<AppStateContextValue>(
+    () => ({
+      ...coreValue,
+      ...assetsValue,
+      ...champSelectValue,
+    }),
+    [assetsValue, champSelectValue, coreValue],
+  );
+
+  return (
+    <AppCoreContext.Provider value={coreValue}>
+      <LeagueAssetsContext.Provider value={assetsValue}>
+        <ChampSelectContext.Provider value={champSelectValue}>
+          <AppStateContext.Provider value={legacyValue}>{children}</AppStateContext.Provider>
+        </ChampSelectContext.Provider>
+      </LeagueAssetsContext.Provider>
+    </AppCoreContext.Provider>
+  );
 }
 
 export function useAppState() {
   const context = useContext(AppStateContext);
+
+  if (!context) {
+    throw new Error("AppStateProvider is missing");
+  }
+
+  return context;
+}
+
+export function useAppCore() {
+  const context = useContext(AppCoreContext);
+
+  if (!context) {
+    throw new Error("AppStateProvider is missing");
+  }
+
+  return context;
+}
+
+export function useLeagueAssets() {
+  const context = useContext(LeagueAssetsContext);
+
+  if (!context) {
+    throw new Error("AppStateProvider is missing");
+  }
+
+  return context;
+}
+
+export function useChampSelect() {
+  const context = useContext(ChampSelectContext);
 
   if (!context) {
     throw new Error("AppStateProvider is missing");
