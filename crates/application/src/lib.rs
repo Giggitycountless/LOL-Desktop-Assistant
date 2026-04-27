@@ -1989,6 +1989,11 @@ pub fn run_ready_check_automation(
         .enumerate()
     {
         let attempt_number = attempt + 1;
+        if !is_ready_check_active(reader)? {
+            log_auto_accept_attempt(attempt_number, "skipped because phase moved before request");
+            return Ok(());
+        }
+
         log_auto_accept_attempt(attempt_number, "sending accept request");
         if let Err(error) = reader.accept_ready_check() {
             log_auto_accept_attempt(attempt_number, "accept request failed");
