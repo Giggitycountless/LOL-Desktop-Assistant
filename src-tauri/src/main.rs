@@ -186,34 +186,39 @@ fn clear_player_note(
 }
 
 fn main() {
-    tauri::Builder::default()
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcut(SELF_HISTORY_OVERLAY_SHORTCUT)
-                .expect("self history overlay shortcut registers")
-                .with_handler(|app, _shortcut, event| {
-                    if event.state != ShortcutState::Pressed {
-                        return;
-                    }
+    let shortcut_plugin = match tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcut(SELF_HISTORY_OVERLAY_SHORTCUT)
+    {
+        Ok(builder) => builder
+            .with_handler(|app, _shortcut, event| {
+                if event.state != ShortcutState::Pressed {
+                    return;
+                }
 
-                    let Some(window) = app.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL)
-                    else {
-                        return;
-                    };
+                let Some(window) = app.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL) else {
+                    return;
+                };
 
-                    match window.is_visible() {
-                        Ok(true) => {
-                            let _ = window.hide();
-                        }
-                        Ok(false) => {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                        Err(_) => {}
+                match window.is_visible() {
+                    Ok(true) => {
+                        let _ = window.hide();
                     }
-                })
-                .build(),
-        )
+                    Ok(false) => {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    Err(_) => {}
+                }
+            })
+            .build(),
+        Err(error) => {
+            eprintln!("failed to register global shortcut: {error}");
+            return;
+        }
+    };
+
+    if let Err(error) = tauri::Builder::default()
+        .plugin(shortcut_plugin)
         .setup(|app| {
             platform::setup_app(app)?;
 
@@ -250,5 +255,7 @@ fn main() {
             clear_player_note
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run LoL Desktop Assistant");
+    {
+        eprintln!("failed to run LoL Desktop Assistant: {error}");
+    }
 }
