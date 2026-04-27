@@ -2036,21 +2036,12 @@ pub fn run_ready_check_automation(
 
 pub fn run_champ_select_automation(
     store: &impl AppStore,
-    reader: &impl LeagueClientReader,
+    _reader: &impl LeagueClientReader,
 ) -> Result<(), ApplicationError> {
     let settings = store.get_settings().map_err(ApplicationError::Storage)?;
 
-    let pick_champion_id = settings
-        .auto_pick_enabled
-        .then_some(settings.auto_pick_champion_id)
-        .flatten();
-    let ban_champion_id = settings
-        .auto_ban_enabled
-        .then_some(settings.auto_ban_champion_id)
-        .flatten();
-
-    if pick_champion_id.is_some() || ban_champion_id.is_some() {
-        let _ = reader.apply_champ_select_preferences(pick_champion_id, ban_champion_id);
+    if settings.auto_pick_enabled || settings.auto_ban_enabled {
+        log_auto_accept_event("champ-select automation execution is disabled");
     }
 
     Ok(())
