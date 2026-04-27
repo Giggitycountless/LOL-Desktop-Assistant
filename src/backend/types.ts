@@ -4,6 +4,15 @@ export type StartupPage = "dashboard" | "activity" | "settings";
 export type AppLanguagePreference = "system" | "zh" | "en";
 export type ActivityKind = "note" | "settings" | "system";
 export type LeagueClientConnection = "connected" | "unavailable";
+export type AutoAcceptStatusState =
+  | "disabled"
+  | "waitingForClient"
+  | "connected"
+  | "searching"
+  | "readyCheckDetected"
+  | "accepting"
+  | "accepted"
+  | "error";
 export type LeagueClientPhase =
   | "notRunning"
   | "lockfileMissing"
@@ -93,6 +102,11 @@ export type LeagueClientStatus = {
   lockfileFound: boolean;
   connection: LeagueClientConnection;
   phase: LeagueClientPhase;
+  message: string | null;
+};
+
+export type AutoAcceptStatus = {
+  state: AutoAcceptStatusState;
   message: string | null;
 };
 

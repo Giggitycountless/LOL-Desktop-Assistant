@@ -5,6 +5,7 @@ import { isCommandError } from "../backend/commands";
 import { exportLocalData, importLocalData } from "../backend/dataTools";
 import {
   clearPlayerNote as clearPlayerNoteCommand,
+  fetchAutoAcceptStatus,
   fetchChampSelectSnapshot,
   fetchLeagueChampionDetails,
   fetchLeagueChampionIcon,
@@ -27,6 +28,7 @@ import type {
   ActivityNoteInput,
   AppSnapshot,
   AppLanguagePreference,
+  AutoAcceptStatus,
   ChampSelectSnapshot,
   Feedback,
   LeagueChampionAbility,
@@ -79,6 +81,7 @@ type AppCoreContextValue = {
   rankedChampionStats: RankedChampionStatsResponse | null;
   postMatchDetails: Record<number, PostMatchDetail>;
   participantProfiles: Record<string, ParticipantPublicProfile>;
+  autoAcceptStatus: AutoAcceptStatus | null;
   isLoading: boolean;
   isActivityLoading: boolean;
   isLeagueClientLoading: boolean;
@@ -134,6 +137,7 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
   const [rankedChampionStats, setRankedChampionStats] = useState<RankedChampionStatsResponse | null>(null);
   const [postMatchDetails, setPostMatchDetails] = useState<Record<number, PostMatchDetail>>({});
   const [participantProfiles, setParticipantProfiles] = useState<Record<string, ParticipantPublicProfile>>({});
+  const [autoAcceptStatus, setAutoAcceptStatus] = useState<AutoAcceptStatus | null>(null);
   const [championDetailsById, setChampionDetailsById] = useState<Record<number, LeagueChampionDetailsView>>({});
   const imageUrlsRef = useRef<LeagueImageUrls>({ profileIcons: {}, championIcons: {}, gameAssets: {} });
   const championDetailsRef = useRef<Record<number, LeagueChampionDetailsView>>({});
@@ -576,9 +580,24 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
       return;
     }
 
-    return listenWithCleanup<Feedback>("automation-feedback", (event) => {
+    void fetchAutoAcceptStatus()
+      .then(setAutoAcceptStatus)
+      .catch(() => {
+        setAutoAcceptStatus(null);
+      });
+
+    const cleanupFeedback = listenWithCleanup<Feedback>("automation-feedback", (event) => {
       setFeedback(event.payload);
     });
+
+    const cleanupStatus = listenWithCleanup<AutoAcceptStatus>("auto-accept-status-update", (event) => {
+      setAutoAcceptStatus(event.payload);
+    });
+
+    return () => {
+      cleanupFeedback();
+      cleanupStatus();
+    };
   }, [mode]);
 
   const loadLeagueGameAssetAction = useCallback(async (kind: LeagueGameAssetKind, assetId: number | null | undefined) => {
@@ -679,6 +698,7 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
       rankedChampionStats,
       postMatchDetails,
       participantProfiles,
+      autoAcceptStatus,
       isLoading,
       isActivityLoading,
       isLeagueClientLoading,
@@ -706,6 +726,7 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     }),
     [
       activityEntries,
+      autoAcceptStatus,
       clearActivityEntriesAction,
       clearPlayerNoteAction,
       createActivityNoteAction,

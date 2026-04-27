@@ -3,6 +3,7 @@ import type {
   ChampSelectSnapshot,
   ClearPlayerNoteInput,
   ClearPlayerNoteResult,
+  AutoAcceptStatus,
   LeagueGameAsset,
   LeagueGameAssetKind,
   LeagueChampionDetails,
@@ -23,6 +24,10 @@ import type {
 
 export function fetchLeagueClientStatus(): Promise<LeagueClientStatus> {
   return callBackend<LeagueClientStatus>("get_league_client_status");
+}
+
+export function fetchAutoAcceptStatus(): Promise<AutoAcceptStatus> {
+  return callBackend<AutoAcceptStatus>("get_auto_accept_status");
 }
 
 export function fetchLeagueChampionCatalog(): Promise<LeagueChampionSummary[]> {

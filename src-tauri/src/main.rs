@@ -83,6 +83,11 @@ fn get_league_client_status(
 }
 
 #[tauri::command]
+fn get_auto_accept_status(state: State<'_, platform::AppState>) -> domain::AutoAcceptStatus {
+    platform::get_auto_accept_status(state.inner())
+}
+
+#[tauri::command]
 fn get_league_champion_catalog(
     state: State<'_, platform::AppState>,
 ) -> Result<Vec<domain::LeagueChampionSummary>, platform::CommandError> {
@@ -240,6 +245,7 @@ fn main() {
             import_local_data,
             clear_activity_entries,
             get_league_client_status,
+            get_auto_accept_status,
             get_league_champion_catalog,
             get_league_self_snapshot,
             get_champ_select_snapshot,

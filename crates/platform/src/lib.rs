@@ -1356,6 +1356,10 @@ pub fn get_league_client_status(state: &AppState) -> Result<LeagueClientStatus, 
     application::get_league_client_status(&state.league_client).map_err(CommandError::from)
 }
 
+pub fn get_auto_accept_status(state: &AppState) -> AutoAcceptStatus {
+    lock_or_recover(&state.auto_accept_status).clone()
+}
+
 pub fn get_league_champion_catalog(
     state: &AppState,
 ) -> Result<Vec<LeagueChampionSummary>, CommandError> {

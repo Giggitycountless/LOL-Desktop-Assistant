@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
 
 import { fetchLeagueChampionCatalog } from "../backend/leagueClient";
-import type { AppLanguagePreference, LeagueChampionSummary, SaveSettingsInput, StartupPage } from "../backend/types";
+import type { AppLanguagePreference, AutoAcceptStatus, LeagueChampionSummary, SaveSettingsInput, StartupPage } from "../backend/types";
 import type { TranslationKey } from "../i18n";
 import { useAppCore } from "../state/AppStateProvider";
 
@@ -18,6 +18,7 @@ export function Settings() {
     exportLocalData,
     importLocalData,
     clearActivityEntries,
+    autoAcceptStatus,
     t,
   } = useAppCore();
   const [draft, setDraft] = useState<SaveSettingsInput>({
@@ -267,6 +268,7 @@ export function Settings() {
 
               <RoomAutomationPanel
                 draft={draft}
+                autoAcceptStatus={autoAcceptStatus}
                 champions={champions}
                 isLoadingChampions={isLoadingChampions}
                 validationMessage={automationValidationMessage}
@@ -405,6 +407,7 @@ function SettingRow({ label, value }: { label: string; value: string }) {
 
 function RoomAutomationPanel({
   draft,
+  autoAcceptStatus,
   champions,
   isLoadingChampions,
   validationMessage,
@@ -416,6 +419,7 @@ function RoomAutomationPanel({
   t,
 }: {
   draft: SaveSettingsInput;
+  autoAcceptStatus: AutoAcceptStatus | null;
   champions: LeagueChampionSummary[];
   isLoadingChampions: boolean;
   validationMessage: string | null;
@@ -431,6 +435,11 @@ function RoomAutomationPanel({
       label: t("settings.autoAcceptShort"),
       value: draft.autoAcceptEnabled ? t("common.on") : t("common.off"),
       active: draft.autoAcceptEnabled,
+    },
+    {
+      label: t("settings.autoAcceptStatus"),
+      value: autoAcceptStatusLabel(autoAcceptStatus, t),
+      active: autoAcceptStatus ? !["disabled", "error"].includes(autoAcceptStatus.state) : false,
     },
     {
       label: t("settings.autoPickShort"),
@@ -450,7 +459,7 @@ function RoomAutomationPanel({
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-zinc-950">{t("settings.lobbyAutomation")}</h3>
         </div>
-        <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-3">
+        <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-4">
           {statusItems.map((item) => (
             <div
               key={item.label}
@@ -782,6 +791,31 @@ function automationSummary(
 
   const champion = champions.find((record) => record.championId === championId);
   return champion?.championName ?? (championId ? String(championId) : t("settings.noChampion"));
+}
+
+function autoAcceptStatusLabel(status: AutoAcceptStatus | null, t: (key: TranslationKey) => string) {
+  if (!status) {
+    return t("common.pending");
+  }
+
+  switch (status.state) {
+    case "disabled":
+      return t("common.off");
+    case "waitingForClient":
+      return t("settings.autoAcceptWaiting");
+    case "connected":
+      return t("common.connected");
+    case "searching":
+      return t("settings.autoAcceptSearching");
+    case "readyCheckDetected":
+      return t("settings.autoAcceptReadyCheck");
+    case "accepting":
+      return t("settings.autoAcceptAccepting");
+    case "accepted":
+      return t("settings.autoAcceptAccepted");
+    case "error":
+      return status.message ?? t("common.unavailable");
+  }
 }
 
 function startupPageLabel(page: StartupPage, t: (key: TranslationKey) => string) {
