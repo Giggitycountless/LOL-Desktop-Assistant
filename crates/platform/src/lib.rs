@@ -150,6 +150,7 @@ pub struct AppState {
     pub champ_select_hydration: Arc<Mutex<Option<ChampSelectHydrationState>>>,
     pub league_phase: Arc<Mutex<Option<String>>>,
     pub auto_accept_status: Arc<Mutex<AutoAcceptStatus>>,
+    pub auto_accept_in_progress: Arc<AtomicBool>,
     cache_metrics: Arc<CacheMetrics>,
 }
 
@@ -179,6 +180,7 @@ impl AppState {
                 AutoAcceptStatusState::Disabled,
                 Some("Auto-accept status has not started".to_string()),
             ))),
+            auto_accept_in_progress: Arc::new(AtomicBool::new(false)),
             cache_metrics: Arc::new(CacheMetrics::default()),
         })
     }
@@ -198,6 +200,7 @@ impl Clone for AppState {
             champ_select_hydration: Arc::clone(&self.champ_select_hydration),
             league_phase: Arc::clone(&self.league_phase),
             auto_accept_status: Arc::clone(&self.auto_accept_status),
+            auto_accept_in_progress: Arc::clone(&self.auto_accept_in_progress),
             cache_metrics: Arc::clone(&self.cache_metrics),
         }
     }
@@ -706,6 +709,14 @@ fn mark_league_event_service_started(state: &AppState) -> bool {
         .swap(true, Ordering::SeqCst)
 }
 
+fn mark_auto_accept_started(state: &AppState) -> bool {
+    !state.auto_accept_in_progress.swap(true, Ordering::SeqCst)
+}
+
+fn clear_auto_accept_started(state: &AppState) {
+    state.auto_accept_in_progress.store(false, Ordering::SeqCst);
+}
+
 fn league_event_loop<R: Runtime + 'static>(app_handle: AppHandle<R>, state: AppState)
 where
     AppHandle<R>: Send,
@@ -887,9 +898,7 @@ fn handle_league_phase_change<R: Runtime + 'static>(
 
     match phase {
         "ReadyCheck" => {
-            if let Err(error) = run_ready_check_automation(state) {
-                emit_automation_feedback(app_handle, error.message);
-            }
+            run_ready_check_automation_guarded(app_handle, state);
         }
         "ChampSelect" => {
             if let Err(error) = run_champ_select_automation(state) {
@@ -905,6 +914,45 @@ fn handle_league_phase_change<R: Runtime + 'static>(
             let _ = app_handle.emit("champ-select-clear", ());
         }
         _ => {}
+    }
+}
+
+fn run_ready_check_automation_guarded<R: Runtime>(app_handle: &AppHandle<R>, state: &AppState) {
+    if !auto_accept_enabled(state) {
+        return;
+    }
+
+    if !mark_auto_accept_started(state) {
+        log_auto_accept_monitor_event("ready check ignored because accept is already in progress");
+        return;
+    }
+
+    set_auto_accept_status(
+        app_handle,
+        state,
+        AutoAcceptStatusState::Accepting,
+        Some("Accepting ready check"),
+    );
+
+    let result = run_ready_check_automation(state);
+    clear_auto_accept_started(state);
+
+    match result {
+        Ok(()) => set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::Accepted,
+            Some("Ready check accepted"),
+        ),
+        Err(error) => {
+            set_auto_accept_status(
+                app_handle,
+                state,
+                AutoAcceptStatusState::Error,
+                Some("Ready check accept failed"),
+            );
+            emit_automation_feedback(app_handle, error.message);
+        }
     }
 }
 
@@ -1619,6 +1667,19 @@ mod tests {
 
         assert!(mark_league_event_service_started(&state));
         assert!(!mark_league_event_service_started(&state));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn auto_accept_guard_only_marks_once_until_cleared() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+
+        assert!(mark_auto_accept_started(&state));
+        assert!(!mark_auto_accept_started(&state));
+        clear_auto_accept_started(&state);
+        assert!(mark_auto_accept_started(&state));
 
         let _ = fs::remove_dir_all(data_dir);
     }
