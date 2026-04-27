@@ -21,13 +21,13 @@ use application::{
     PostMatchDetailInput, RankedChampionRefreshInput, RankedChampionStatsInput, SettingsInput,
 };
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, AutoAcceptStatus,
-    AutoAcceptStatusState, ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus,
-    HealthReport, ImportLocalDataResult, LeagueChampionDetails, LeagueChampionSummary,
-    LeagueClientStatus, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData,
-    LeagueSelfSnapshot, LocalDataExport, ParticipantPublicProfile, ParticipantRecentStats,
-    PlayerNoteView, PostMatchDetail, RankedChampionLane, RankedChampionSort,
-    RankedChampionStatsResponse, SettingsValues,
+    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, AutoAcceptStatus, AutoAcceptStatusState,
+    ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus, HealthReport,
+    ImportLocalDataResult, LeagueChampionDetails, LeagueChampionSummary, LeagueClientStatus,
+    LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot,
+    LocalDataExport, ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteView,
+    PostMatchDetail, RankedChampionLane, RankedChampionSort, RankedChampionStatsResponse,
+    SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -717,6 +717,14 @@ fn clear_auto_accept_started(state: &AppState) {
     state.auto_accept_in_progress.store(false, Ordering::SeqCst);
 }
 
+fn reset_league_event_session_state(state: &AppState, service_state: &mut LeagueEventServiceState) {
+    service_state.phase = None;
+    service_state.fingerprint.clear();
+    set_league_phase(state, None);
+    cancel_champ_select_hydration(state);
+    clear_auto_accept_started(state);
+}
+
 fn league_event_loop<R: Runtime + 'static>(app_handle: AppHandle<R>, state: AppState)
 where
     AppHandle<R>: Send,
@@ -745,11 +753,7 @@ where
             eprintln!("[auto-accept-monitor] websocket session ended: {error:?}");
         }
 
-        service_state.phase = None;
-        service_state.fingerprint.clear();
-        set_league_phase(&state, None);
-        cancel_champ_select_hydration(&state);
-        clear_auto_accept_started(&state);
+        reset_league_event_session_state(&state, &mut service_state);
         if auto_accept_enabled(&state) {
             set_auto_accept_status(
                 &app_handle,
@@ -840,7 +844,9 @@ where
     match event.uri.as_str() {
         GAMEFLOW_PHASE_URI => {
             let Some(phase) = event.data.as_str() else {
-                log_auto_accept_monitor_event("gameflow event ignored because phase payload was not text");
+                log_auto_accept_monitor_event(
+                    "gameflow event ignored because phase payload was not text",
+                );
                 return false;
             };
             if service_state.phase.as_deref() != Some(phase) {
@@ -1692,6 +1698,76 @@ mod tests {
         assert!(mark_auto_accept_started(&state));
         assert!(!mark_auto_accept_started(&state));
         clear_auto_accept_started(&state);
+        assert!(mark_auto_accept_started(&state));
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn auto_accept_status_defaults_to_disabled() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+
+        let status = get_auto_accept_status(&state);
+
+        assert_eq!(status.state, AutoAcceptStatusState::Disabled);
+        assert_eq!(
+            status.message.as_deref(),
+            Some("Auto-accept status has not started")
+        );
+
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn auto_accept_status_serializes_all_safe_states() {
+        let cases = [
+            (AutoAcceptStatusState::Disabled, "disabled"),
+            (AutoAcceptStatusState::WaitingForClient, "waitingForClient"),
+            (AutoAcceptStatusState::Connected, "connected"),
+            (AutoAcceptStatusState::Searching, "searching"),
+            (
+                AutoAcceptStatusState::ReadyCheckDetected,
+                "readyCheckDetected",
+            ),
+            (AutoAcceptStatusState::Accepting, "accepting"),
+            (AutoAcceptStatusState::Accepted, "accepted"),
+            (AutoAcceptStatusState::Error, "error"),
+        ];
+
+        for (state, expected_name) in cases {
+            let value = serde_json::to_value(AutoAcceptStatus::new(
+                state,
+                Some("Safe status message".to_string()),
+            ))
+            .expect("auto accept status serializes");
+            let fields = value.as_object().expect("auto accept status is an object");
+
+            assert_eq!(value["state"], expected_name);
+            assert_eq!(value["message"], "Safe status message");
+            assert_eq!(fields.len(), 2);
+            assert!(fields.contains_key("state"));
+            assert!(fields.contains_key("message"));
+        }
+    }
+
+    #[test]
+    fn reconnect_reset_clears_monitor_phase_and_accept_guard() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+        let mut service_state = LeagueEventServiceState {
+            phase: Some("ReadyCheck".to_string()),
+            fingerprint: "old-session-fingerprint".to_string(),
+        };
+
+        set_league_phase(&state, Some("ReadyCheck".to_string()));
+        assert!(mark_auto_accept_started(&state));
+
+        reset_league_event_session_state(&state, &mut service_state);
+
+        assert!(service_state.phase.is_none());
+        assert!(service_state.fingerprint.is_empty());
+        assert!(lock_or_recover(&state.league_phase).is_none());
         assert!(mark_auto_accept_started(&state));
 
         let _ = fs::remove_dir_all(data_dir);

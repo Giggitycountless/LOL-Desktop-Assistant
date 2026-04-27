@@ -2233,6 +2233,21 @@ mod tests {
     }
 
     #[test]
+    fn champ_select_automation_does_not_call_reader_when_settings_are_enabled() {
+        let mut settings = default_settings();
+        settings.auto_pick_enabled = true;
+        settings.auto_pick_champion_id = Some(103);
+        settings.auto_ban_enabled = true;
+        settings.auto_ban_champion_id = Some(122);
+        let store = FakeStore::new(settings);
+        let reader = FakeLeagueClientReader::new(Vec::new());
+
+        run_champ_select_automation(&store, &reader).expect("automation no-ops safely");
+
+        assert_eq!(reader.champ_select_preference_call_count(), 0);
+    }
+
+    #[test]
     fn create_activity_note_trims_input() {
         let store = FakeStore::new(default_settings());
 
@@ -3144,6 +3159,7 @@ mod tests {
         ready_check_clears_after: Option<i64>,
         ready_check_next_phase: String,
         ready_check_accept_error: Option<LeagueClientReadError>,
+        champ_select_preference_calls: Mutex<i64>,
         recent_stats_batch_calls: Mutex<Vec<Vec<String>>>,
         summoners_by_id: Vec<SummonerBatchEntry>,
         summoners_by_name: Vec<SummonerBatchEntry>,
@@ -3179,6 +3195,7 @@ mod tests {
                 ready_check_clears_after: None,
                 ready_check_next_phase: "ChampSelect".to_string(),
                 ready_check_accept_error: None,
+                champ_select_preference_calls: Mutex::new(0),
                 recent_stats_batch_calls: Mutex::new(Vec::new()),
                 summoners_by_id: Vec::new(),
                 summoners_by_name: Vec::new(),
@@ -3210,6 +3227,7 @@ mod tests {
                 ready_check_clears_after: None,
                 ready_check_next_phase: "ChampSelect".to_string(),
                 ready_check_accept_error: None,
+                champ_select_preference_calls: Mutex::new(0),
                 recent_stats_batch_calls: Mutex::new(Vec::new()),
                 summoners_by_id: Vec::new(),
                 summoners_by_name: Vec::new(),
@@ -3251,6 +3269,10 @@ mod tests {
 
         fn accept_ready_check_count(&self) -> i64 {
             *self.ready_check_accepts.lock().unwrap()
+        }
+
+        fn champ_select_preference_call_count(&self) -> i64 {
+            *self.champ_select_preference_calls.lock().unwrap()
         }
 
         fn recent_stats_batch_calls(&self) -> Vec<Vec<String>> {
@@ -3469,6 +3491,7 @@ mod tests {
             _pick_champion_id: Option<i64>,
             _ban_champion_id: Option<i64>,
         ) -> Result<(), LeagueClientReadError> {
+            *self.champ_select_preference_calls.lock().unwrap() += 1;
             Ok(())
         }
     }
