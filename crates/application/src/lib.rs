@@ -1997,6 +1997,14 @@ pub fn run_ready_check_automation(
         log_auto_accept_attempt(attempt_number, "sending accept request");
         if let Err(error) = reader.accept_ready_check() {
             log_auto_accept_attempt(attempt_number, "accept request failed");
+            if !is_ready_check_active(reader)? {
+                log_auto_accept_attempt(
+                    attempt_number,
+                    "accept response was uncertain but phase moved",
+                );
+                return Ok(());
+            }
+
             record_system_activity(
                 store,
                 "Lobby automation accept failed",
@@ -2207,6 +2215,21 @@ mod tests {
         assert_eq!(reader.accept_ready_check_count(), 1);
         assert_eq!(store.created_entries.borrow().len(), 1);
         assert_eq!(store.created_entries.borrow()[0].kind, ActivityKind::System);
+    }
+
+    #[test]
+    fn ready_check_automation_treats_accept_error_as_success_when_phase_moves() {
+        let store = FakeStore::new(default_settings());
+        let reader = FakeLeagueClientReader::new(Vec::new())
+            .with_phase_transition_after_accepts(1, "ChampSelect")
+            .with_ready_check_accept_error(LeagueClientReadError::Integration(
+                "Ready check response was unavailable".to_string(),
+            ));
+
+        run_ready_check_automation(&store, &reader).expect("phase movement confirms accept");
+
+        assert_eq!(reader.accept_ready_check_count(), 1);
+        assert!(store.created_entries.borrow().is_empty());
     }
 
     #[test]

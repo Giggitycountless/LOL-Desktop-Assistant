@@ -995,13 +995,9 @@ impl LeagueClientReader for LocalLeagueClient {
             SessionOpenResult::Status(status) => return Err(read_error_from_status(status)),
         };
 
-        match session.post_empty("/lol-matchmaking/v1/ready-check/accept") {
-            Ok(()) => Ok(()),
-            Err(error @ (LcuRequestError::Unauthorized | LcuRequestError::Patching)) => {
-                Err(read_error_from_request(error))
-            }
-            Err(_) => Ok(()),
-        }
+        session
+            .post_empty("/lol-matchmaking/v1/ready-check/accept")
+            .map_err(read_error_from_request)
     }
 
     fn apply_champ_select_preferences(
