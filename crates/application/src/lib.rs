@@ -23,6 +23,14 @@ use domain::{
 mod constants;
 use constants::*;
 
+fn log_auto_accept_event(message: &str) {
+    eprintln!("[auto-accept] {message}");
+}
+
+fn log_auto_accept_attempt(attempt: usize, message: &str) {
+    eprintln!("[auto-accept] attempt {attempt}: {message}");
+}
+
 struct RankedChampionSeed {
     champion_id: i64,
     champion_name: &'static str,
@@ -1964,12 +1972,15 @@ pub fn run_ready_check_automation(
     let settings = store.get_settings().map_err(ApplicationError::Storage)?;
 
     if !settings.auto_accept_enabled {
+        log_auto_accept_event("skipped because setting is disabled");
         return Ok(());
     }
 
     if !is_ready_check_active(reader)? {
+        log_auto_accept_event("skipped because ReadyCheck is not active");
         return Ok(());
     }
+    log_auto_accept_event("ready check detected");
 
     for (attempt, delay_ms) in READY_CHECK_AUTOMATION_RETRY_DELAYS_MS
         .iter()
@@ -1977,7 +1988,10 @@ pub fn run_ready_check_automation(
         .chain(std::iter::once(0))
         .enumerate()
     {
+        let attempt_number = attempt + 1;
+        log_auto_accept_attempt(attempt_number, "sending accept request");
         if let Err(error) = reader.accept_ready_check() {
+            log_auto_accept_attempt(attempt_number, "accept request failed");
             record_system_activity(
                 store,
                 "Lobby automation accept failed",
@@ -1987,16 +2001,21 @@ pub fn run_ready_check_automation(
         }
 
         if !is_ready_check_active(reader)? {
+            log_auto_accept_attempt(attempt_number, "verified phase moved after accept");
             return Ok(());
         }
+        log_auto_accept_attempt(attempt_number, "phase still ReadyCheck after accept");
 
         if delay_ms > 0 {
+            log_auto_accept_attempt(attempt_number, "waiting before retry verification");
             thread::sleep(Duration::from_millis(delay_ms));
         }
 
         if !is_ready_check_active(reader)? {
+            log_auto_accept_attempt(attempt_number, "verified phase moved after delay");
             return Ok(());
         }
+        log_auto_accept_attempt(attempt_number, "phase still ReadyCheck after delay");
 
         if attempt + 1 == READY_CHECK_AUTOMATION_RETRY_DELAYS_MS.len() + 1 {
             break;
@@ -2011,6 +2030,7 @@ pub fn run_ready_check_automation(
         "Lobby automation requires manual accept",
         "Auto-accept retried, but the client stayed in ReadyCheck. Manual confirmation may still be needed.",
     );
+    log_auto_accept_event("failed because phase stayed ReadyCheck after retries");
     Err(ApplicationError::Integration(message))
 }
 
