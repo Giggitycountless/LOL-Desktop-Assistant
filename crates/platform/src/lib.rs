@@ -43,6 +43,14 @@ struct AutomationFeedbackEvent {
     message: String,
 }
 
+fn log_auto_accept_monitor_event(message: &str) {
+    eprintln!("[auto-accept-monitor] {message}");
+}
+
+fn log_auto_accept_monitor_phase(label: &str, phase: &str) {
+    eprintln!("[auto-accept-monitor] {label}: {phase}");
+}
+
 #[derive(Debug, Clone)]
 pub struct ChampSelectCacheEntry {
     snapshot: domain::ChampSelectSnapshot,
@@ -638,9 +646,11 @@ where
     AppHandle<R>: Send,
 {
     if !mark_league_event_service_started(&state) {
+        log_auto_accept_monitor_event("league event service already started");
         return false;
     }
 
+    log_auto_accept_monitor_event("league event service starting");
     thread::spawn(move || league_event_loop(app_handle, state));
     true
 }
@@ -660,18 +670,24 @@ where
         .enable_all()
         .build()
     else {
+        log_auto_accept_monitor_event("tokio runtime could not be created");
         return;
     };
+    log_auto_accept_monitor_event("league event loop started");
     let mut backoff = LeagueReconnectBackoff::new();
     let mut service_state = LeagueEventServiceState::default();
 
     loop {
+        log_auto_accept_monitor_event("opening websocket session");
         let result = runtime.block_on(league_websocket_session(
             &app_handle,
             &state,
             &mut service_state,
             &mut backoff,
         ));
+        if let Err(error) = &result {
+            eprintln!("[auto-accept-monitor] websocket session ended: {error:?}");
+        }
 
         service_state.phase = None;
         service_state.fingerprint.clear();
@@ -681,11 +697,17 @@ where
         if result.is_err()
             && !run_league_event_http_fallback(&app_handle, &state, &mut service_state)
         {
+            log_auto_accept_monitor_event("fallback phase read failed");
             *lock_or_recover(&state.champ_select_cache) = None;
             let _ = app_handle.emit("champ-select-clear", ());
         }
 
-        thread::sleep(backoff.next_delay().min(LEAGUE_EVENT_FALLBACK_POLL));
+        let delay = backoff.next_delay().min(LEAGUE_EVENT_FALLBACK_POLL);
+        eprintln!(
+            "[auto-accept-monitor] reconnect scheduled in {}s",
+            delay.as_secs()
+        );
+        thread::sleep(delay);
     }
 }
 
@@ -699,9 +721,11 @@ where
     AppHandle<R>: Send,
 {
     let mut client = state.league_client.open_websocket().await?;
+    log_auto_accept_monitor_event("subscribing to gameflow phase events");
     client
         .subscribe(LcuSubscription::JsonApiEvent(GAMEFLOW_PHASE_URI))
         .await?;
+    log_auto_accept_monitor_event("subscribing to champ select session events");
     client
         .subscribe(LcuSubscription::JsonApiEvent(CHAMP_SELECT_SESSION_URI))
         .await?;
@@ -735,6 +759,7 @@ where
     match event.uri.as_str() {
         GAMEFLOW_PHASE_URI => {
             let Some(phase) = event.data.as_str() else {
+                log_auto_accept_monitor_event("gameflow event ignored because phase payload was not text");
                 return false;
             };
             if service_state.phase.as_deref() != Some(phase) {
@@ -768,8 +793,10 @@ where
     AppHandle<R>: Send,
 {
     let Ok(phase) = state.league_client.gameflow_phase() else {
+        log_auto_accept_monitor_event("fallback gameflow phase unavailable");
         return false;
     };
+    log_auto_accept_monitor_phase("fallback gameflow phase", phase.as_str());
 
     if service_state.phase.as_deref() != Some(phase.as_str()) {
         handle_league_phase_change(app_handle, state, phase.as_str());
@@ -792,6 +819,7 @@ fn handle_league_phase_change<R: Runtime + 'static>(
 ) where
     AppHandle<R>: Send,
 {
+    log_auto_accept_monitor_phase("phase changed", phase);
     let _ = app_handle.emit("league-phase-update", phase);
     set_league_phase(state, Some(phase.to_string()));
 
