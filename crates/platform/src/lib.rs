@@ -749,6 +749,15 @@ where
         service_state.fingerprint.clear();
         set_league_phase(&state, None);
         cancel_champ_select_hydration(&state);
+        clear_auto_accept_started(&state);
+        if auto_accept_enabled(&state) {
+            set_auto_accept_status(
+                &app_handle,
+                &state,
+                AutoAcceptStatusState::WaitingForClient,
+                Some("Reconnecting to League Client"),
+            );
+        }
 
         if result.is_err()
             && !run_league_event_http_fallback(&app_handle, &state, &mut service_state)
