@@ -504,6 +504,16 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
     };
   }, [applyChampSelectSnapshotAction, mode, refreshChampSelectSnapshotAction]);
 
+  useEffect(() => {
+    if (mode !== "main") {
+      return;
+    }
+
+    return listenWithCleanup<Feedback>("automation-feedback", (event) => {
+      setFeedback(event.payload);
+    });
+  }, [mode]);
+
   const loadLeagueGameAssetAction = useCallback(async (kind: LeagueGameAssetKind, assetId: number | null | undefined) => {
     if (!assetId) {
       return true;
@@ -785,7 +795,6 @@ function champSelectFingerprint(snapshot: ChampSelectSnapshot) {
       const recentMatchIds = player.recentStats?.recentMatches.map((match) => match.gameId).join(",") ?? "";
       return [
         player.summonerId,
-        player.puuid,
         player.displayName,
         player.championId ?? "",
         player.team,

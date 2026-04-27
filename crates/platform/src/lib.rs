@@ -46,6 +46,13 @@ const LEAGUE_EVENT_FALLBACK_POLL: Duration = Duration::from_secs(30);
 const GAMEFLOW_PHASE_URI: &str = "/lol-gameflow/v1/gameflow-phase";
 const CHAMP_SELECT_SESSION_URI: &str = "/lol-champ-select/v1/session";
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutomationFeedbackEvent {
+    kind: String,
+    message: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChampSelectCacheEntry {
     snapshot: domain::ChampSelectSnapshot,
@@ -139,6 +146,10 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         self.inner.status()
     }
 
+    fn gameflow_phase(&self) -> Result<String, LeagueClientReadError> {
+        self.inner.gameflow_phase()
+    }
+
     fn self_data(&self, match_limit: i64) -> Result<LeagueSelfData, LeagueClientReadError> {
         self.inner.self_data(match_limit)
     }
@@ -174,20 +185,13 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         player_puuid: &str,
         limit: i64,
     ) -> Result<ParticipantRecentStats, LeagueClientReadError> {
-        let cache_key = format!("{player_puuid}:{limit}");
+        let cache_key = recent_stats_cache_key(player_puuid, limit);
         if let Some(result) = self
             .recent_stats_cache
             .lock()
             .unwrap()
             .get(cache_key.as_str())
-            .filter(|entry| {
-                let ttl = if entry.result.is_ok() {
-                    RECENT_STATS_CACHE_TTL
-                } else {
-                    RECENT_STATS_FAILURE_CACHE_TTL
-                };
-                entry.cached_at.elapsed() < ttl
-            })
+            .filter(|entry| recent_stats_cache_is_fresh(entry))
             .map(|entry| entry.result.clone())
         {
             return result;
@@ -203,6 +207,54 @@ impl LeagueClientReader for CachedLeagueClientReader<'_> {
         );
 
         result
+    }
+
+    fn participant_recent_stats_batch(
+        &self,
+        player_puuids: &[String],
+        limit: i64,
+    ) -> HashMap<String, Result<ParticipantRecentStats, LeagueClientReadError>> {
+        let mut results = HashMap::new();
+        let mut missing_puuids = Vec::new();
+
+        {
+            let cache = self.recent_stats_cache.lock().unwrap();
+            for player_puuid in player_puuids {
+                let cache_key = recent_stats_cache_key(player_puuid, limit);
+                match cache
+                    .get(cache_key.as_str())
+                    .filter(|entry| recent_stats_cache_is_fresh(entry))
+                {
+                    Some(entry) => {
+                        results.insert(player_puuid.clone(), entry.result.clone());
+                    }
+                    None => missing_puuids.push(player_puuid.clone()),
+                }
+            }
+        }
+
+        if missing_puuids.is_empty() {
+            return results;
+        }
+
+        let fetched = self
+            .inner
+            .participant_recent_stats_batch(&missing_puuids, limit);
+        let mut cache = self.recent_stats_cache.lock().unwrap();
+        for player_puuid in missing_puuids {
+            if let Some(result) = fetched.get(player_puuid.as_str()).cloned() {
+                cache.insert(
+                    recent_stats_cache_key(player_puuid.as_str(), limit),
+                    RecentStatsCacheEntry {
+                        result: result.clone(),
+                        cached_at: Instant::now(),
+                    },
+                );
+                results.insert(player_puuid, result);
+            }
+        }
+
+        results
     }
 
     fn champ_select_session(
@@ -364,6 +416,20 @@ fn summoner_cache_is_fresh(entry: &SummonerCacheEntry) -> bool {
         SUMMONER_CACHE_TTL
     } else {
         SUMMONER_FAILURE_CACHE_TTL
+    };
+
+    entry.cached_at.elapsed() < ttl
+}
+
+fn recent_stats_cache_key(player_puuid: &str, limit: i64) -> String {
+    format!("{player_puuid}:{limit}")
+}
+
+fn recent_stats_cache_is_fresh(entry: &RecentStatsCacheEntry) -> bool {
+    let ttl = if entry.result.is_ok() {
+        RECENT_STATS_CACHE_TTL
+    } else {
+        RECENT_STATS_FAILURE_CACHE_TTL
     };
 
     entry.cached_at.elapsed() < ttl
@@ -555,7 +621,8 @@ fn league_event_loop<R: Runtime + 'static>(app_handle: AppHandle<R>, state: AppS
 where
     AppHandle<R>: Send,
 {
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
     else {
@@ -605,10 +672,16 @@ where
         .subscribe(LcuSubscription::JsonApiEvent(CHAMP_SELECT_SESSION_URI))
         .await?;
 
-    run_league_event_http_fallback(app_handle, state, service_state);
+    tokio::task::block_in_place(|| {
+        run_league_event_http_fallback(app_handle, state, service_state);
+    });
 
     while let Some(event) = client.next_event().await? {
-        if handle_lcu_websocket_event(app_handle, state, service_state, &event) {
+        let was_handled = tokio::task::block_in_place(|| {
+            handle_lcu_websocket_event(app_handle, state, service_state, &event)
+        });
+
+        if was_handled {
             backoff.reset();
         }
     }
@@ -690,10 +763,14 @@ fn handle_league_phase_change<R: Runtime + 'static>(
 
     match phase {
         "ReadyCheck" => {
-            let _ = run_ready_check_automation(state);
+            if let Err(error) = run_ready_check_automation(state) {
+                emit_automation_feedback(app_handle, error.message);
+            }
         }
         "ChampSelect" => {
-            let _ = run_champ_select_automation(state);
+            if let Err(error) = run_champ_select_automation(state) {
+                emit_automation_feedback(app_handle, error.message);
+            }
             if phase == "ChampSelect" {
                 let _ = refresh_champ_select_from_event(app_handle, state);
             }
@@ -705,6 +782,16 @@ fn handle_league_phase_change<R: Runtime + 'static>(
         }
         _ => {}
     }
+}
+
+fn emit_automation_feedback<R: Runtime>(app_handle: &AppHandle<R>, message: String) {
+    let _ = app_handle.emit(
+        "automation-feedback",
+        AutomationFeedbackEvent {
+            kind: "error".to_string(),
+            message,
+        },
+    );
 }
 
 fn set_league_phase(state: &AppState, phase: Option<String>) {
@@ -724,12 +811,7 @@ where
 {
     let mut snapshot = build_champ_select_snapshot(state, CHAMP_SELECT_LIGHT_RECENT_LIMIT).ok()?;
     let roster_fingerprint = champ_select_roster_fingerprint(&snapshot);
-    let cached_entry = state
-        .champ_select_cache
-        .lock()
-        .unwrap()
-        .as_ref()
-        .cloned();
+    let cached_entry = state.champ_select_cache.lock().unwrap().as_ref().cloned();
     let cached_snapshot = cached_entry.as_ref().map(|entry| entry.snapshot.clone());
     let cached_roster_fingerprint = cached_snapshot
         .as_ref()
@@ -1331,6 +1413,17 @@ mod tests {
         assert!(!mark_league_event_service_started(&state));
 
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn champ_select_snapshot_serializes_without_puuid() {
+        let snapshot = sample_champ_select_snapshot();
+        let value = serde_json::to_value(&snapshot).expect("snapshot serializes");
+        let serialized = value.to_string();
+
+        assert_eq!(value["players"][0]["displayName"], "Player#NA1");
+        assert!(value["players"][0].get("puuid").is_none());
+        assert!(!serialized.contains("puuid-7"));
     }
 
     #[test]
