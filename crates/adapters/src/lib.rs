@@ -308,6 +308,10 @@ fn unix_timestamp_seconds() -> String {
         .unwrap_or_else(|_| "0".to_string())
 }
 
+fn log_lcu_adapter_event(message: &str) {
+    eprintln!("[lcu-adapter] {message}");
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LocalLeagueClient {
     lockfile_override: Option<PathBuf>,
@@ -339,7 +343,17 @@ impl LocalLeagueClient {
         let credentials = self
             .read_lockfile_credentials()
             .map_err(|_| LcuWebSocketError::Unavailable)?;
-        LcuWebSocketClient::connect(credentials).await
+        log_lcu_adapter_event("websocket connecting");
+        match LcuWebSocketClient::connect(credentials).await {
+            Ok(client) => {
+                log_lcu_adapter_event("websocket connected");
+                Ok(client)
+            }
+            Err(error) => {
+                log_lcu_adapter_event("websocket connection failed");
+                Err(error)
+            }
+        }
     }
 
     fn read_status(&self) -> LeagueClientStatus {
@@ -639,20 +653,30 @@ impl LocalLeagueClient {
         };
 
         match LcuSession::new(credentials) {
-            Ok(session) => SessionOpenResult::Ready(session),
-            Err(_) => SessionOpenResult::Status(unavailable_status(
-                true,
-                true,
-                LeagueClientPhase::Unavailable,
-                "League Client local connection could not be prepared",
-            )),
+            Ok(session) => {
+                log_lcu_adapter_event("local session created");
+                SessionOpenResult::Ready(session)
+            }
+            Err(_) => {
+                log_lcu_adapter_event("local session creation failed");
+                SessionOpenResult::Status(unavailable_status(
+                    true,
+                    true,
+                    LeagueClientPhase::Unavailable,
+                    "League Client local connection could not be prepared",
+                ))
+            }
         }
     }
 
     fn read_lockfile_credentials(&self) -> Result<LockfileCredentials, LeagueClientStatus> {
         let lockfile_path = match self.discover_lockfile_path() {
-            LockfileDiscovery::Found(path) => path,
+            LockfileDiscovery::Found(path) => {
+                log_lcu_adapter_event("lockfile discovered");
+                path
+            }
             LockfileDiscovery::NotRunning => {
+                log_lcu_adapter_event("league client process not detected");
                 return Err(unavailable_status(
                     false,
                     false,
@@ -661,6 +685,7 @@ impl LocalLeagueClient {
                 ));
             }
             LockfileDiscovery::LockfileMissing => {
+                log_lcu_adapter_event("league client process detected without lockfile");
                 return Err(unavailable_status(
                     true,
                     false,
@@ -671,8 +696,12 @@ impl LocalLeagueClient {
         };
 
         let lockfile_contents = match fs::read_to_string(&lockfile_path) {
-            Ok(contents) => contents,
+            Ok(contents) => {
+                log_lcu_adapter_event("lockfile read");
+                contents
+            }
             Err(_) => {
+                log_lcu_adapter_event("lockfile read failed");
                 return Err(unavailable_status(
                     true,
                     true,
@@ -683,13 +712,19 @@ impl LocalLeagueClient {
         };
 
         match parse_lockfile(lockfile_contents.as_str()) {
-            Ok(credentials) => Ok(credentials),
-            Err(_) => Err(unavailable_status(
-                true,
-                true,
-                LeagueClientPhase::Unavailable,
-                "League Client lockfile could not be parsed",
-            )),
+            Ok(credentials) => {
+                log_lcu_adapter_event("lockfile parsed");
+                Ok(credentials)
+            }
+            Err(_) => {
+                log_lcu_adapter_event("lockfile parse failed");
+                Err(unavailable_status(
+                    true,
+                    true,
+                    LeagueClientPhase::Unavailable,
+                    "League Client lockfile could not be parsed",
+                ))
+            }
         }
     }
 
@@ -1122,18 +1157,28 @@ impl LcuWebSocketClient {
                         return Ok(Some(event));
                     }
                 }
-                Ok(Message::Close(_)) => return Ok(None),
+                Ok(Message::Close(_)) => {
+                    log_lcu_adapter_event("websocket closed by client");
+                    return Ok(None);
+                }
                 Ok(_) => {}
                 Err(error) => {
                     return Err(match error {
                         tungstenite::Error::ConnectionClosed
-                        | tungstenite::Error::AlreadyClosed => LcuWebSocketError::Disconnected,
-                        _ => LcuWebSocketError::Unexpected,
+                        | tungstenite::Error::AlreadyClosed => {
+                            log_lcu_adapter_event("websocket disconnected");
+                            LcuWebSocketError::Disconnected
+                        }
+                        _ => {
+                            log_lcu_adapter_event("websocket unexpected error");
+                            LcuWebSocketError::Unexpected
+                        }
                     });
                 }
             }
         }
 
+        log_lcu_adapter_event("websocket stream ended");
         Ok(None)
     }
 }
