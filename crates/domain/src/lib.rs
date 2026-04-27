@@ -282,6 +282,32 @@ pub enum LeagueClientPhase {
     Unavailable,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoAcceptStatus {
+    pub state: AutoAcceptStatusState,
+    pub message: Option<String>,
+}
+
+impl AutoAcceptStatus {
+    pub fn new(state: AutoAcceptStatusState, message: Option<String>) -> Self {
+        Self { state, message }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoAcceptStatusState {
+    Disabled,
+    WaitingForClient,
+    Connected,
+    Searching,
+    ReadyCheckDetected,
+    Accepting,
+    Accepted,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LeagueSelfSnapshot {

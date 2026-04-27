@@ -21,12 +21,13 @@ use application::{
     PostMatchDetailInput, RankedChampionRefreshInput, RankedChampionStatsInput, SettingsInput,
 };
 use domain::{
-    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, ClearActivityResult,
-    ClearPlayerNoteResult, DatabaseStatus, HealthReport, ImportLocalDataResult,
-    LeagueChampionDetails, LeagueChampionSummary, LeagueClientStatus, LeagueGameAsset,
-    LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalDataExport,
-    ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteView, PostMatchDetail,
-    RankedChampionLane, RankedChampionSort, RankedChampionStatsResponse, SettingsValues,
+    ActivityEntry, ActivityKind, AppSettings, AppSnapshot, AutoAcceptStatus,
+    AutoAcceptStatusState, ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus,
+    HealthReport, ImportLocalDataResult, LeagueChampionDetails, LeagueChampionSummary,
+    LeagueClientStatus, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData,
+    LeagueSelfSnapshot, LocalDataExport, ParticipantPublicProfile, ParticipantRecentStats,
+    PlayerNoteView, PostMatchDetail, RankedChampionLane, RankedChampionSort,
+    RankedChampionStatsResponse, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -111,6 +112,7 @@ pub struct AppState {
     pub league_event_service_started: Arc<AtomicBool>,
     pub champ_select_hydration: Arc<Mutex<Option<ChampSelectHydrationState>>>,
     pub league_phase: Arc<Mutex<Option<String>>>,
+    pub auto_accept_status: Arc<Mutex<AutoAcceptStatus>>,
     cache_metrics: Arc<CacheMetrics>,
 }
 
@@ -136,6 +138,10 @@ impl AppState {
             league_event_service_started: Arc::new(AtomicBool::new(false)),
             champ_select_hydration: Arc::new(Mutex::new(None)),
             league_phase: Arc::new(Mutex::new(None)),
+            auto_accept_status: Arc::new(Mutex::new(AutoAcceptStatus::new(
+                AutoAcceptStatusState::Disabled,
+                Some("Auto-accept status has not started".to_string()),
+            ))),
             cache_metrics: Arc::new(CacheMetrics::default()),
         })
     }
@@ -154,6 +160,7 @@ impl Clone for AppState {
             league_event_service_started: Arc::clone(&self.league_event_service_started),
             champ_select_hydration: Arc::clone(&self.champ_select_hydration),
             league_phase: Arc::clone(&self.league_phase),
+            auto_accept_status: Arc::clone(&self.auto_accept_status),
             cache_metrics: Arc::clone(&self.cache_metrics),
         }
     }
