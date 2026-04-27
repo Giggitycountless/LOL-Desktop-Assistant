@@ -44,12 +44,49 @@ struct AutomationFeedbackEvent {
     message: String,
 }
 
+const AUTO_ACCEPT_STATUS_EVENT: &str = "auto-accept-status-update";
+
 fn log_auto_accept_monitor_event(message: &str) {
     eprintln!("[auto-accept-monitor] {message}");
 }
 
 fn log_auto_accept_monitor_phase(label: &str, phase: &str) {
     eprintln!("[auto-accept-monitor] {label}: {phase}");
+}
+
+fn set_auto_accept_status<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+    status_state: AutoAcceptStatusState,
+    message: Option<&str>,
+) {
+    let status = AutoAcceptStatus::new(status_state, message.map(str::to_string));
+    *lock_or_recover(&state.auto_accept_status) = status.clone();
+    let _ = app_handle.emit(AUTO_ACCEPT_STATUS_EVENT, &status);
+}
+
+fn auto_accept_enabled(state: &AppState) -> bool {
+    application::get_settings(&state.store)
+        .map(|settings| settings.auto_accept_enabled)
+        .unwrap_or(false)
+}
+
+fn set_auto_accept_idle_status<R: Runtime>(app_handle: &AppHandle<R>, state: &AppState) {
+    if auto_accept_enabled(state) {
+        set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::WaitingForClient,
+            Some("Waiting for League Client"),
+        );
+    } else {
+        set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::Disabled,
+            Some("Auto-accept is disabled"),
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -658,6 +695,7 @@ where
     }
 
     log_auto_accept_monitor_event("league event service starting");
+    set_auto_accept_idle_status(&app_handle, &state);
     thread::spawn(move || league_event_loop(app_handle, state));
     true
 }
@@ -705,6 +743,14 @@ where
             && !run_league_event_http_fallback(&app_handle, &state, &mut service_state)
         {
             log_auto_accept_monitor_event("fallback phase read failed");
+            if auto_accept_enabled(&state) {
+                set_auto_accept_status(
+                    &app_handle,
+                    &state,
+                    AutoAcceptStatusState::WaitingForClient,
+                    Some("Waiting for League Client"),
+                );
+            }
             *lock_or_recover(&state.champ_select_cache) = None;
             let _ = app_handle.emit("champ-select-clear", ());
         }
@@ -736,6 +782,14 @@ where
     client
         .subscribe(LcuSubscription::JsonApiEvent(CHAMP_SELECT_SESSION_URI))
         .await?;
+    if auto_accept_enabled(state) {
+        set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::Connected,
+            Some("Connected to League Client"),
+        );
+    }
 
     tokio::task::block_in_place(|| {
         run_league_event_http_fallback(app_handle, state, service_state);
@@ -829,6 +883,7 @@ fn handle_league_phase_change<R: Runtime + 'static>(
     log_auto_accept_monitor_phase("phase changed", phase);
     let _ = app_handle.emit("league-phase-update", phase);
     set_league_phase(state, Some(phase.to_string()));
+    update_auto_accept_status_for_phase(app_handle, state, phase);
 
     match phase {
         "ReadyCheck" => {
@@ -850,6 +905,43 @@ fn handle_league_phase_change<R: Runtime + 'static>(
             let _ = app_handle.emit("champ-select-clear", ());
         }
         _ => {}
+    }
+}
+
+fn update_auto_accept_status_for_phase<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    state: &AppState,
+    phase: &str,
+) {
+    if !auto_accept_enabled(state) {
+        set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::Disabled,
+            Some("Auto-accept is disabled"),
+        );
+        return;
+    }
+
+    match phase {
+        "Matchmaking" => set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::Searching,
+            Some("Searching for a match"),
+        ),
+        "ReadyCheck" => set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::ReadyCheckDetected,
+            Some("Ready check detected"),
+        ),
+        _ => set_auto_accept_status(
+            app_handle,
+            state,
+            AutoAcceptStatusState::Connected,
+            Some("Connected to League Client"),
+        ),
     }
 }
 
