@@ -88,6 +88,11 @@ fn get_auto_accept_status(state: State<'_, platform::AppState>) -> domain::AutoA
 }
 
 #[tauri::command]
+fn can_open_self_history_overlay(state: State<'_, platform::AppState>) -> bool {
+    platform::can_open_self_history_overlay(state.inner())
+}
+
+#[tauri::command]
 fn get_league_champion_catalog(
     state: State<'_, platform::AppState>,
 ) -> Result<Vec<domain::LeagueChampionSummary>, platform::CommandError> {
@@ -200,9 +205,18 @@ fn main() {
                     return;
                 }
 
+                let can_open = app
+                    .try_state::<platform::AppState>()
+                    .map(|state| platform::can_open_self_history_overlay(state.inner()))
+                    .unwrap_or(false);
                 let Some(window) = app.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL) else {
                     return;
                 };
+
+                if !can_open {
+                    let _ = window.destroy();
+                    return;
+                }
 
                 match window.is_visible() {
                     Ok(true) => {
@@ -246,6 +260,7 @@ fn main() {
             clear_activity_entries,
             get_league_client_status,
             get_auto_accept_status,
+            can_open_self_history_overlay,
             get_league_champion_catalog,
             get_league_self_snapshot,
             get_champ_select_snapshot,

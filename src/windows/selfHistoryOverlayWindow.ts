@@ -1,14 +1,21 @@
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
+import { callBackend } from "../backend/commands";
+
 export const SELF_HISTORY_OVERLAY_WINDOW_LABEL = "self-history-overlay";
 
 export async function openSelfHistoryOverlayWindow() {
+  const canOpen = await callBackend<boolean>("can_open_self_history_overlay").catch(() => false);
+  if (!canOpen) {
+    return false;
+  }
+
   const existing = await WebviewWindow.getByLabel(SELF_HISTORY_OVERLAY_WINDOW_LABEL);
 
   if (existing) {
     await existing.show();
     await existing.setFocus();
-    return;
+    return true;
   }
 
   const overlayWindow = new WebviewWindow(SELF_HISTORY_OVERLAY_WINDOW_LABEL, {
@@ -27,6 +34,7 @@ export async function openSelfHistoryOverlayWindow() {
   void overlayWindow.once("tauri://error", () => {
     console.warn("Self history overlay window could not be opened.");
   });
+  return true;
 }
 
 export function selfHistoryOverlayWindowUrl() {

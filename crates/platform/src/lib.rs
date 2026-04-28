@@ -1405,6 +1405,10 @@ pub fn get_auto_accept_status(state: &AppState) -> AutoAcceptStatus {
     lock_or_recover(&state.auto_accept_status).clone()
 }
 
+pub fn can_open_self_history_overlay(state: &AppState) -> bool {
+    current_league_phase_is(state, "InProgress")
+}
+
 pub fn get_league_champion_catalog(
     state: &AppState,
 ) -> Result<Vec<LeagueChampionSummary>, CommandError> {
@@ -1930,6 +1934,20 @@ mod tests {
                 "{phase} should destroy the self-history overlay"
             );
         }
+    }
+
+    #[test]
+    fn self_history_overlay_open_gate_uses_cached_in_progress_phase() {
+        let data_dir = unique_temp_dir();
+        let state = AppState::initialize(&data_dir).expect("app state initializes");
+
+        set_league_phase(&state, Some("ChampSelect".to_string()));
+        assert!(!can_open_self_history_overlay(&state));
+
+        set_league_phase(&state, Some("InProgress".to_string()));
+        assert!(can_open_self_history_overlay(&state));
+
+        let _ = fs::remove_dir_all(data_dir);
     }
 
     #[test]
