@@ -4,6 +4,8 @@ import { callBackend } from "../backend/commands";
 
 export const SELF_HISTORY_OVERLAY_WINDOW_LABEL = "self-history-overlay";
 
+let overlayOpenPromise: Promise<boolean> | null = null;
+
 export function canOpenSelfHistoryOverlayWindow() {
   return callBackend<boolean>("can_open_self_history_overlay").catch(() => false);
 }
@@ -13,6 +15,17 @@ export function destroySelfHistoryOverlayWindow() {
 }
 
 export async function openSelfHistoryOverlayWindow() {
+  if (overlayOpenPromise) {
+    return overlayOpenPromise;
+  }
+
+  overlayOpenPromise = openSelfHistoryOverlayWindowOnce().finally(() => {
+    overlayOpenPromise = null;
+  });
+  return overlayOpenPromise;
+}
+
+async function openSelfHistoryOverlayWindowOnce() {
   const canOpen = await canOpenSelfHistoryOverlayWindow();
   if (!canOpen) {
     return false;
