@@ -5,6 +5,7 @@ import type { ChampSelectPlayer, MatchResult, RankedQueueSummary, RecentMatchSum
 import type { EffectiveLanguage, TranslationKey } from "../i18n";
 import type { LeagueChampionAbilityView, LeagueChampionDetailsView } from "../state/AppStateProvider";
 import { useAppCore, useChampSelect, useLeagueAssets } from "../state/AppStateProvider";
+import { canOpenSelfHistoryOverlayWindow, destroySelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindow";
 
 const TEAM_SIZE = 5;
 const MATCH_ROWS = 6;
@@ -53,12 +54,34 @@ export function SelfHistoryOverlay() {
   const [championDetailsError, setChampionDetailsError] = useState(false);
   const [isRefreshingChampSelect, setIsRefreshingChampSelect] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const [isOverlayAllowed, setIsOverlayAllowed] = useState(false);
   const players = champSelectSnapshot?.players ?? [];
   const selectedChampionDetails = selectedChampionId ? championDetailsById[selectedChampionId] : undefined;
   const model = useMemo(
     () => createOverlayModel(players, leagueImages.championIcons, effectiveLanguage, t),
     [effectiveLanguage, leagueImages.championIcons, players, t],
   );
+
+  useEffect(() => {
+    let wasCancelled = false;
+
+    void canOpenSelfHistoryOverlayWindow().then(async (canOpen) => {
+      if (wasCancelled) {
+        return;
+      }
+
+      if (!canOpen) {
+        await destroySelfHistoryOverlayWindow();
+        return;
+      }
+
+      setIsOverlayAllowed(true);
+    });
+
+    return () => {
+      wasCancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!refreshFailed) {
@@ -129,6 +152,14 @@ export function SelfHistoryOverlay() {
       console.warn("Self history overlay could not be hidden.");
     }
   }, []);
+
+  if (!isOverlayAllowed) {
+    return (
+      <main className="flex h-screen items-center justify-center bg-[#e8edf3] text-sm font-bold text-slate-500">
+        {t("common.pending")}
+      </main>
+    );
+  }
 
   return (
     <main

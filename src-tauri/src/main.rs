@@ -93,6 +93,13 @@ fn can_open_self_history_overlay(state: State<'_, platform::AppState>) -> bool {
 }
 
 #[tauri::command]
+fn destroy_self_history_overlay_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL) {
+        let _ = window.destroy();
+    }
+}
+
+#[tauri::command]
 fn get_league_champion_catalog(
     state: State<'_, platform::AppState>,
 ) -> Result<Vec<domain::LeagueChampionSummary>, platform::CommandError> {
@@ -261,6 +268,7 @@ fn main() {
             get_league_client_status,
             get_auto_accept_status,
             can_open_self_history_overlay,
+            destroy_self_history_overlay_window,
             get_league_champion_catalog,
             get_league_self_snapshot,
             get_champ_select_snapshot,

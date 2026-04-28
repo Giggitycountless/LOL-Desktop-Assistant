@@ -4,8 +4,16 @@ import { callBackend } from "../backend/commands";
 
 export const SELF_HISTORY_OVERLAY_WINDOW_LABEL = "self-history-overlay";
 
+export function canOpenSelfHistoryOverlayWindow() {
+  return callBackend<boolean>("can_open_self_history_overlay").catch(() => false);
+}
+
+export function destroySelfHistoryOverlayWindow() {
+  return callBackend<void>("destroy_self_history_overlay_window").catch(() => undefined);
+}
+
 export async function openSelfHistoryOverlayWindow() {
-  const canOpen = await callBackend<boolean>("can_open_self_history_overlay").catch(() => false);
+  const canOpen = await canOpenSelfHistoryOverlayWindow();
   if (!canOpen) {
     return false;
   }
