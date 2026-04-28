@@ -923,7 +923,7 @@ fn handle_league_phase_change<R: Runtime + 'static>(
                 let _ = refresh_champ_select_from_event(app_handle, state);
             }
         }
-        "GameStart" | "PreEndOfGame" | "None" => {
+        phase if should_clear_champ_select_cache_for_phase(phase) => {
             cancel_champ_select_hydration(state);
             *lock_or_recover(&state.champ_select_cache) = None;
             let _ = app_handle.emit("champ-select-clear", ());
@@ -1024,6 +1024,19 @@ fn set_league_phase(state: &AppState, phase: Option<String>) {
 
 fn current_league_phase_is(state: &AppState, phase: &str) -> bool {
     lock_or_recover(state.league_phase.as_ref()).as_deref() == Some(phase)
+}
+
+fn should_clear_champ_select_cache_for_phase(phase: &str) -> bool {
+    matches!(
+        phase,
+        "Lobby"
+            | "Matchmaking"
+            | "ReadyCheck"
+            | "WaitingForStats"
+            | "PreEndOfGame"
+            | "EndOfGame"
+            | "None"
+    )
 }
 
 fn refresh_champ_select_from_event<R: Runtime + 'static>(
@@ -1846,6 +1859,30 @@ mod tests {
             "new-roster",
             CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
         ));
+    }
+
+    #[test]
+    fn champ_select_cache_survives_game_start_for_in_progress_overlay() {
+        assert!(!should_clear_champ_select_cache_for_phase("GameStart"));
+        assert!(!should_clear_champ_select_cache_for_phase("InProgress"));
+    }
+
+    #[test]
+    fn champ_select_cache_clears_for_non_game_phases() {
+        for phase in [
+            "Lobby",
+            "Matchmaking",
+            "ReadyCheck",
+            "WaitingForStats",
+            "PreEndOfGame",
+            "EndOfGame",
+            "None",
+        ] {
+            assert!(
+                should_clear_champ_select_cache_for_phase(phase),
+                "{phase} should clear stale overlay roster data"
+            );
+        }
     }
 
     #[test]
