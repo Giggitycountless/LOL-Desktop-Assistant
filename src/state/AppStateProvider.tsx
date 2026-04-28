@@ -22,6 +22,7 @@ import { saveSettings } from "../backend/settings";
 import { createTranslator, resolveEffectiveLanguage, type EffectiveLanguage, type TranslationKey } from "../i18n";
 import { fetchAppState } from "../backend/system";
 import { listenWithCleanup } from "../backend/events";
+import { openSelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindow";
 import type {
   ActivityEntry,
   ActivityListInput,
@@ -128,6 +129,7 @@ const LeagueAssetsContext = createContext<LeagueAssetsContextValue | null>(null)
 const ChampSelectContext = createContext<ChampSelectContextValue | null>(null);
 const ASSET_LOAD_CONCURRENCY = 4;
 const ASSET_LOAD_DELAY_MS = 16;
+const SELF_HISTORY_OVERLAY_OPEN_DELAY_MS = 500;
 
 export function AppStateProvider({ children, mode = "main" }: { children: ReactNode; mode?: AppWindowMode }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
@@ -594,9 +596,37 @@ export function AppStateProvider({ children, mode = "main" }: { children: ReactN
       setAutoAcceptStatus(event.payload);
     });
 
+    let overlayOpenTimer: number | null = null;
+    const clearOverlayOpenTimer = () => {
+      if (overlayOpenTimer !== null) {
+        window.clearTimeout(overlayOpenTimer);
+        overlayOpenTimer = null;
+      }
+    };
+    const scheduleOverlayOpen = () => {
+      clearOverlayOpenTimer();
+      overlayOpenTimer = window.setTimeout(() => {
+        overlayOpenTimer = null;
+        void openSelfHistoryOverlayWindow();
+      }, SELF_HISTORY_OVERLAY_OPEN_DELAY_MS);
+    };
+
+    const cleanupLeaguePhase = listenWithCleanup<string>("league-phase-update", (event) => {
+      if (event.payload === "InProgress") {
+        scheduleOverlayOpen();
+        return;
+      }
+
+      clearOverlayOpenTimer();
+    });
+
+    void openSelfHistoryOverlayWindow();
+
     return () => {
+      clearOverlayOpenTimer();
       cleanupFeedback();
       cleanupStatus();
+      cleanupLeaguePhase();
     };
   }, [mode]);
 
