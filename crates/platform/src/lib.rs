@@ -45,6 +45,7 @@ struct AutomationFeedbackEvent {
 }
 
 const AUTO_ACCEPT_STATUS_EVENT: &str = "auto-accept-status-update";
+const SELF_HISTORY_OVERLAY_WINDOW_LABEL: &str = "self-history-overlay";
 
 fn log_auto_accept_monitor_event(message: &str) {
     eprintln!("[auto-accept-monitor] {message}");
@@ -910,6 +911,9 @@ fn handle_league_phase_change<R: Runtime + 'static>(
     let _ = app_handle.emit("league-phase-update", phase);
     set_league_phase(state, Some(phase.to_string()));
     update_auto_accept_status_for_phase(app_handle, state, phase);
+    if should_destroy_self_history_overlay_for_phase(phase) {
+        destroy_self_history_overlay_window(app_handle);
+    }
 
     match phase {
         "ReadyCheck" => {
@@ -1037,6 +1041,16 @@ fn should_clear_champ_select_cache_for_phase(phase: &str) -> bool {
             | "EndOfGame"
             | "None"
     )
+}
+
+fn should_destroy_self_history_overlay_for_phase(phase: &str) -> bool {
+    phase != "InProgress"
+}
+
+fn destroy_self_history_overlay_window<R: Runtime>(app_handle: &AppHandle<R>) {
+    if let Some(window) = app_handle.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL) {
+        let _ = window.destroy();
+    }
 }
 
 fn champ_select_cache_is_usable(
@@ -1894,6 +1908,26 @@ mod tests {
             assert!(
                 should_clear_champ_select_cache_for_phase(phase),
                 "{phase} should clear stale overlay roster data"
+            );
+        }
+    }
+
+    #[test]
+    fn self_history_overlay_stays_open_only_during_in_progress() {
+        assert!(!should_destroy_self_history_overlay_for_phase("InProgress"));
+
+        for phase in [
+            "Lobby",
+            "Matchmaking",
+            "ReadyCheck",
+            "ChampSelect",
+            "WaitingForStats",
+            "EndOfGame",
+            "None",
+        ] {
+            assert!(
+                should_destroy_self_history_overlay_for_phase(phase),
+                "{phase} should destroy the self-history overlay"
             );
         }
     }
