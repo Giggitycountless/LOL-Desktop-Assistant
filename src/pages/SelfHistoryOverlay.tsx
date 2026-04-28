@@ -45,6 +45,8 @@ type OverlayModel = {
   };
 };
 
+type InitialSnapshotStatus = "loading" | "ready" | "error";
+
 export function SelfHistoryOverlay() {
   const { effectiveLanguage, t } = useAppCore();
   const { champSelectSnapshot, refreshChampSelectSnapshot } = useChampSelect();
@@ -55,6 +57,7 @@ export function SelfHistoryOverlay() {
   const [isRefreshingChampSelect, setIsRefreshingChampSelect] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const [isOverlayAllowed, setIsOverlayAllowed] = useState(false);
+  const [initialSnapshotStatus, setInitialSnapshotStatus] = useState<InitialSnapshotStatus>("loading");
   const players = champSelectSnapshot?.players ?? [];
   const selectedChampionDetails = selectedChampionId ? championDetailsById[selectedChampionId] : undefined;
   const model = useMemo(
@@ -91,6 +94,30 @@ export function SelfHistoryOverlay() {
     const timer = window.setTimeout(() => setRefreshFailed(false), 2500);
     return () => window.clearTimeout(timer);
   }, [refreshFailed]);
+
+  useEffect(() => {
+    if (!isOverlayAllowed) {
+      return;
+    }
+
+    let wasCancelled = false;
+    setInitialSnapshotStatus("loading");
+    void refreshChampSelectSnapshot().then((didRefresh) => {
+      if (!wasCancelled) {
+        setInitialSnapshotStatus(didRefresh ? "ready" : "error");
+      }
+    });
+
+    return () => {
+      wasCancelled = true;
+    };
+  }, [isOverlayAllowed, refreshChampSelectSnapshot]);
+
+  useEffect(() => {
+    if (players.length > 0) {
+      setInitialSnapshotStatus("ready");
+    }
+  }, [players.length]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -136,10 +163,12 @@ export function SelfHistoryOverlay() {
       }
 
       setRefreshFailed(false);
+      setInitialSnapshotStatus("loading");
       setIsRefreshingChampSelect(true);
       const didRefresh = await refreshChampSelectSnapshot();
       setIsRefreshingChampSelect(false);
       setRefreshFailed(!didRefresh);
+      setInitialSnapshotStatus(didRefresh ? "ready" : "error");
     },
     [isRefreshingChampSelect, refreshChampSelectSnapshot],
   );
@@ -217,7 +246,7 @@ export function SelfHistoryOverlay() {
 
       {players.length === 0 && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 rounded-md border border-slate-200 bg-white/95 px-5 py-3 text-center text-sm font-bold text-slate-500 shadow-lg">
-          {t("overlay.empty")}
+          {initialSnapshotMessage(initialSnapshotStatus, t)}
         </div>
       )}
 
@@ -748,6 +777,18 @@ function rankValue(summary: RankedQueueSummary | undefined, language: EffectiveL
   const division = summary.division ? romanToNumber(summary.division) : "";
 
   return `${tier}${division}`;
+}
+
+function initialSnapshotMessage(status: InitialSnapshotStatus, t: T) {
+  if (status === "loading") {
+    return t("common.loading");
+  }
+
+  if (status === "error") {
+    return t("overlay.refreshFailed");
+  }
+
+  return t("overlay.empty");
 }
 
 function rankTierLabel(tier: string, language: EffectiveLanguage) {
