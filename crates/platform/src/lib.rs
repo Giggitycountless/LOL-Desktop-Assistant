@@ -1039,6 +1039,18 @@ fn should_clear_champ_select_cache_for_phase(phase: &str) -> bool {
     )
 }
 
+fn champ_select_cache_is_usable(
+    entry: &ChampSelectCacheEntry,
+    recent_limit: i64,
+    current_phase: Option<&str>,
+) -> bool {
+    if current_phase == Some("InProgress") {
+        return true;
+    }
+
+    entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL && entry.recent_limit >= recent_limit
+}
+
 fn refresh_champ_select_from_event<R: Runtime + 'static>(
     app_handle: &AppHandle<R>,
     state: &AppState,
@@ -1420,13 +1432,14 @@ pub fn get_champ_select_snapshot(
     let recent_limit = command
         .recent_limit
         .unwrap_or(CHAMP_SELECT_HYDRATED_RECENT_LIMIT);
+    let current_phase = lock_or_recover(state.league_phase.as_ref()).clone();
     if let Some(snapshot) = state
         .champ_select_cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .as_ref()
         .filter(|entry| {
-            entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL && entry.recent_limit >= recent_limit
+            champ_select_cache_is_usable(entry, recent_limit, current_phase.as_deref())
         })
         .map(|entry| entry.snapshot.clone())
     {
@@ -1883,6 +1896,36 @@ mod tests {
                 "{phase} should clear stale overlay roster data"
             );
         }
+    }
+
+    #[test]
+    fn champ_select_cache_is_usable_in_progress_after_ttl() {
+        let entry = ChampSelectCacheEntry {
+            snapshot: sample_champ_select_snapshot(),
+            cached_at: Instant::now() - CHAMP_SELECT_CACHE_TTL - Duration::from_secs(1),
+            recent_limit: CHAMP_SELECT_LIGHT_RECENT_LIMIT,
+        };
+
+        assert!(champ_select_cache_is_usable(
+            &entry,
+            CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
+            Some("InProgress"),
+        ));
+    }
+
+    #[test]
+    fn champ_select_cache_still_requires_fresh_hydrated_data_before_game() {
+        let entry = ChampSelectCacheEntry {
+            snapshot: sample_champ_select_snapshot(),
+            cached_at: Instant::now() - CHAMP_SELECT_CACHE_TTL - Duration::from_secs(1),
+            recent_limit: CHAMP_SELECT_LIGHT_RECENT_LIMIT,
+        };
+
+        assert!(!champ_select_cache_is_usable(
+            &entry,
+            CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
+            Some("ChampSelect"),
+        ));
     }
 
     #[test]
