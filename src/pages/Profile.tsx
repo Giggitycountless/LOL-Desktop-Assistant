@@ -3,7 +3,6 @@ import { useEffect } from "react";
 import { useAppCore, useLeagueAssets } from "../state/AppStateProvider";
 import type { KdaTag, RankedQueue, RankedQueueSummary, RecentChampionSummary } from "../backend/types";
 import type { TranslationKey } from "../i18n";
-import { openSelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindow";
 
 export function Profile() {
   const {
@@ -40,14 +39,6 @@ export function Profile() {
             <h1 className="mt-2 text-3xl font-semibold text-zinc-950">{t("profile.title")}</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition hover:border-zinc-400 hover:bg-zinc-50"
-              onClick={() => void openSelfHistoryOverlayWindow()}
-              type="button"
-            >
-              <WindowIcon />
-              {t("profile.openOverlay")}
-            </button>
             <button
               className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm font-medium text-zinc-800 transition hover:border-zinc-400 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
               disabled={isLeagueClientLoading}
@@ -204,20 +195,6 @@ function RefreshIcon() {
     <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24">
       <path
         d="M20 12a8 8 0 0 1-13.6 5.7M4 12A8 8 0 0 1 17.6 6.3M18 3v4h-4M6 21v-4h4"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
-}
-
-function WindowIcon() {
-  return (
-    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24">
-      <path
-        d="M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Zm2 4h10M7 13h5"
         stroke="currentColor"
         strokeLinecap="round"
         strokeLinejoin="round"
