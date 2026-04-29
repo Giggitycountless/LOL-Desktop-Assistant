@@ -9,6 +9,7 @@ import { canOpenSelfHistoryOverlayWindow, destroySelfHistoryOverlayWindow } from
 
 const TEAM_SIZE = 5;
 const MATCH_ROWS = 6;
+const HISTORY_LOAD_TIMEOUT_MS = 8000;
 
 type T = (key: TranslationKey) => string;
 type TeamTone = "ally" | "enemy";
@@ -62,6 +63,7 @@ export function SelfHistoryOverlay() {
   const hasPlayers = players.length > 0;
   const hasRecentStats = players.some((player) => player.recentStats !== null);
   const isHistoryLoading = hasPlayers && !hasRecentStats && initialSnapshotStatus === "loading";
+  const isHistoryUnavailable = hasPlayers && !hasRecentStats && initialSnapshotStatus === "error";
   const selectedChampionDetails = selectedChampionId ? championDetailsById[selectedChampionId] : undefined;
   const model = useMemo(
     () => createOverlayModel(players, leagueImages.championIcons, effectiveLanguage, t),
@@ -121,6 +123,17 @@ export function SelfHistoryOverlay() {
       setInitialSnapshotStatus("ready");
     }
   }, [hasRecentStats]);
+
+  useEffect(() => {
+    if (!isHistoryLoading) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setInitialSnapshotStatus((currentStatus) => (currentStatus === "loading" ? "error" : currentStatus));
+    }, HISTORY_LOAD_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [isHistoryLoading]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -247,7 +260,7 @@ export function SelfHistoryOverlay() {
         />
       </div>
 
-      {(players.length === 0 || isHistoryLoading) && (
+      {(players.length === 0 || isHistoryLoading || isHistoryUnavailable) && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 rounded-md border border-slate-200 bg-white/95 px-5 py-3 text-center text-sm font-bold text-slate-500 shadow-lg">
           {initialSnapshotMessage(initialSnapshotStatus, t)}
         </div>
