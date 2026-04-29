@@ -378,6 +378,22 @@ pub struct ChampSelectSessionData {
     pub ally_names: Vec<String>,
     pub enemy_names: Vec<String>,
     pub champion_selections_by_name: std::collections::HashMap<String, i64>,
+    pub source: ChampSelectSessionSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChampSelectSessionSource {
+    ChampSelect,
+    LiveClient,
+}
+
+impl ChampSelectSessionSource {
+    fn as_log_label(self) -> &'static str {
+        match self {
+            Self::ChampSelect => "champ-select",
+            Self::LiveClient => "live-client",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1906,6 +1922,10 @@ pub fn get_champ_select_snapshot(
         });
     }
 
+    let player_count = seeds.len();
+    let missing_identity_count = seeds.iter().filter(|seed| seed.puuid.is_empty()).count();
+    let resolved_identity_count = player_count.saturating_sub(missing_identity_count);
+    let mut recent_stats_requested = 0;
     let recent_stats_by_puuid = if recent_limit <= 0 {
         HashMap::new()
     } else {
@@ -1916,8 +1936,27 @@ pub fn get_champ_select_snapshot(
             .collect();
         puuids.sort_unstable();
         puuids.dedup();
+        recent_stats_requested = puuids.len();
         reader.participant_recent_stats_batch(&puuids, recent_limit)
     };
+    let recent_stats_success = recent_stats_by_puuid
+        .values()
+        .filter(|result| result.is_ok())
+        .count();
+    let recent_stats_failed = recent_stats_by_puuid
+        .values()
+        .filter(|result| result.is_err())
+        .count();
+    log_overlay_history_snapshot(
+        session.source,
+        player_count,
+        resolved_identity_count,
+        missing_identity_count,
+        recent_stats_requested,
+        recent_stats_success,
+        recent_stats_failed,
+        recent_limit,
+    );
     let players = seeds
         .into_iter()
         .map(|seed| {
@@ -1942,6 +1981,30 @@ pub fn get_champ_select_snapshot(
         players,
         cached_at: unix_timestamp_seconds(),
     })
+}
+
+fn log_overlay_history_snapshot(
+    source: ChampSelectSessionSource,
+    player_count: usize,
+    resolved_identity_count: usize,
+    missing_identity_count: usize,
+    recent_stats_requested: usize,
+    recent_stats_success: usize,
+    recent_stats_failed: usize,
+    recent_limit: i64,
+) {
+    eprintln!(
+        "[overlay-history] roster source={} players={} puuidResolved={} missingIdentity={} recentLimit={}",
+        source.as_log_label(),
+        player_count,
+        resolved_identity_count,
+        missing_identity_count,
+        recent_limit
+    );
+    eprintln!(
+        "[overlay-history] recent stats requested={} success={} failed={} missingIdentity={}",
+        recent_stats_requested, recent_stats_success, recent_stats_failed, missing_identity_count
+    );
 }
 
 pub fn get_league_champion_catalog(
@@ -2376,6 +2439,7 @@ mod tests {
                 ally_names: Vec::new(),
                 enemy_names: Vec::new(),
                 champion_selections_by_name: HashMap::new(),
+                source: ChampSelectSessionSource::ChampSelect,
             },
             vec![
                 SummonerBatchEntry {
@@ -2415,6 +2479,7 @@ mod tests {
                 ally_names: Vec::new(),
                 enemy_names: Vec::new(),
                 champion_selections_by_name: HashMap::new(),
+                source: ChampSelectSessionSource::ChampSelect,
             },
             vec![
                 SummonerBatchEntry {
@@ -3185,6 +3250,7 @@ mod tests {
                     ally_names: Vec::new(),
                     enemy_names: Vec::new(),
                     champion_selections_by_name: HashMap::new(),
+                    source: ChampSelectSessionSource::ChampSelect,
                 },
                 data,
                 completed_match: Mutex::new(None),
@@ -3211,6 +3277,7 @@ mod tests {
                     ally_names: Vec::new(),
                     enemy_names: Vec::new(),
                     champion_selections_by_name: HashMap::new(),
+                    source: ChampSelectSessionSource::ChampSelect,
                 },
                 data: LeagueSelfData {
                     status: connected_status(),

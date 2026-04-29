@@ -7,8 +7,9 @@ use std::{
 };
 
 use application::{
-    ChampSelectSessionData, LeagueClientReadError, LeagueClientReader, RankedChampionDataError,
-    RankedChampionDataProvider, RankedChampionRefreshInput, SummonerBatchEntry,
+    ChampSelectSessionData, ChampSelectSessionSource, LeagueClientReadError, LeagueClientReader,
+    RankedChampionDataError, RankedChampionDataProvider, RankedChampionRefreshInput,
+    SummonerBatchEntry,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use domain::{
@@ -80,9 +81,9 @@ impl RankedChampionDataProvider for RemoteRankedChampionJsonProvider {
         }
 
         let response = self.http_client.get(url).send().map_err(|error| {
-            RankedChampionDataError::Unavailable(
-                format!("Ranked champion data could not be downloaded: {error}"),
-            )
+            RankedChampionDataError::Unavailable(format!(
+                "Ranked champion data could not be downloaded: {error}"
+            ))
         })?;
 
         if !response.status().is_success() {
@@ -93,9 +94,9 @@ impl RankedChampionDataProvider for RemoteRankedChampionJsonProvider {
         }
 
         let body = response.text().map_err(|error| {
-            RankedChampionDataError::Unavailable(
-                format!("Ranked champion data response could not be read: {error}"),
-            )
+            RankedChampionDataError::Unavailable(format!(
+                "Ranked champion data response could not be read: {error}"
+            ))
         })?;
 
         parse_ranked_champion_snapshot_json(body.as_str())
@@ -643,6 +644,7 @@ impl LocalLeagueClient {
             ally_names,
             enemy_names,
             champion_selections_by_name: HashMap::new(),
+            source: ChampSelectSessionSource::LiveClient,
         })
     }
 
@@ -884,6 +886,7 @@ impl LeagueClientReader for LocalLeagueClient {
                 .filter_map(LcuChampSelectMember::display_name)
                 .collect(),
             champion_selections_by_name,
+            source: ChampSelectSessionSource::ChampSelect,
         })
     }
 
