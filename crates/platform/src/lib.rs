@@ -1063,10 +1063,75 @@ fn champ_select_cache_is_usable(
     current_phase: Option<&str>,
 ) -> bool {
     if current_phase == Some("InProgress") {
-        return true;
+        return recent_limit <= CHAMP_SELECT_LIGHT_RECENT_LIMIT || entry.recent_limit >= recent_limit;
     }
 
     entry.cached_at.elapsed() < CHAMP_SELECT_CACHE_TTL && entry.recent_limit >= recent_limit
+}
+
+fn champ_select_cache_can_hydrate_from_cache(
+    entry: &ChampSelectCacheEntry,
+    recent_limit: i64,
+    current_phase: Option<&str>,
+) -> bool {
+    current_phase == Some("InProgress")
+        && recent_limit > CHAMP_SELECT_LIGHT_RECENT_LIMIT
+        && entry.recent_limit < recent_limit
+        && entry.snapshot.players.iter().any(|player| !player.puuid.is_empty())
+}
+
+fn hydrate_cached_champ_select_snapshot(
+    state: &AppState,
+    cached_snapshot: &domain::ChampSelectSnapshot,
+    recent_limit: i64,
+) -> domain::ChampSelectSnapshot {
+    let mut snapshot = cached_snapshot.clone();
+    let player_puuids: Vec<String> = snapshot
+        .players
+        .iter()
+        .filter_map(|player| {
+            if player.puuid.is_empty() {
+                None
+            } else {
+                Some(player.puuid.clone())
+            }
+        })
+        .collect();
+
+    if player_puuids.is_empty() {
+        return snapshot;
+    }
+
+    let cached_reader = CachedLeagueClientReader {
+        inner: &state.league_client,
+        recent_stats_cache: &state.recent_stats_cache,
+        summoner_id_cache: &state.summoner_id_cache,
+        summoner_name_cache: &state.summoner_name_cache,
+        cache_metrics: &state.cache_metrics,
+    };
+    let recent_stats_by_puuid =
+        cached_reader.participant_recent_stats_batch(&player_puuids, recent_limit);
+
+    for player in &mut snapshot.players {
+        if let Some(Ok(recent_stats)) = recent_stats_by_puuid.get(player.puuid.as_str()) {
+            player.recent_stats = Some(recent_stats.clone());
+        }
+    }
+
+    snapshot
+}
+
+fn champ_select_snapshot_has_complete_recent_stats(snapshot: &domain::ChampSelectSnapshot) -> bool {
+    let known_players: Vec<_> = snapshot
+        .players
+        .iter()
+        .filter(|player| !player.puuid.is_empty())
+        .collect();
+
+    !known_players.is_empty()
+        && known_players
+            .iter()
+            .all(|player| player.recent_stats.is_some())
 }
 
 fn refresh_champ_select_from_event<R: Runtime + 'static>(
@@ -1457,20 +1522,37 @@ pub fn get_champ_select_snapshot(
         .recent_limit
         .unwrap_or(CHAMP_SELECT_HYDRATED_RECENT_LIMIT);
     let current_phase = lock_or_recover(state.league_phase.as_ref()).clone();
-    if let Some(snapshot) = state
-        .champ_select_cache
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    let cached_entry = lock_or_recover(&state.champ_select_cache).clone();
+    if let Some(snapshot) = cached_entry
         .as_ref()
-        .filter(|entry| {
-            champ_select_cache_is_usable(entry, recent_limit, current_phase.as_deref())
-        })
+        .filter(|entry| champ_select_cache_is_usable(entry, recent_limit, current_phase.as_deref()))
         .map(|entry| entry.snapshot.clone())
     {
         state
             .cache_metrics
             .champ_select_cache_hits
             .fetch_add(1, Ordering::Relaxed);
+        return Ok(snapshot);
+    }
+
+    if let Some(entry) = cached_entry.as_ref().filter(|entry| {
+        champ_select_cache_can_hydrate_from_cache(entry, recent_limit, current_phase.as_deref())
+    }) {
+        state
+            .cache_metrics
+            .champ_select_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+        let snapshot = hydrate_cached_champ_select_snapshot(state, &entry.snapshot, recent_limit);
+        let cached_recent_limit = if champ_select_snapshot_has_complete_recent_stats(&snapshot) {
+            recent_limit
+        } else {
+            entry.recent_limit
+        };
+        *lock_or_recover(&state.champ_select_cache) = Some(ChampSelectCacheEntry {
+            snapshot: snapshot.clone(),
+            cached_at: Instant::now(),
+            recent_limit: cached_recent_limit,
+        });
         return Ok(snapshot);
     }
 
@@ -1957,14 +2039,19 @@ mod tests {
     }
 
     #[test]
-    fn champ_select_cache_is_usable_in_progress_after_ttl() {
+    fn champ_select_light_cache_can_hydrate_in_progress_after_ttl() {
         let entry = ChampSelectCacheEntry {
             snapshot: sample_champ_select_snapshot(),
             cached_at: Instant::now() - CHAMP_SELECT_CACHE_TTL - Duration::from_secs(1),
             recent_limit: CHAMP_SELECT_LIGHT_RECENT_LIMIT,
         };
 
-        assert!(champ_select_cache_is_usable(
+        assert!(!champ_select_cache_is_usable(
+            &entry,
+            CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
+            Some("InProgress"),
+        ));
+        assert!(champ_select_cache_can_hydrate_from_cache(
             &entry,
             CHAMP_SELECT_HYDRATED_RECENT_LIMIT,
             Some("InProgress"),
