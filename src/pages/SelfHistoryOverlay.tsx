@@ -1,7 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { memo, useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 
-import type { ChampSelectPlayer, MatchResult, RankedQueueSummary, RecentMatchSummary } from "../backend/types";
+import type {
+  ChampSelectPlayer,
+  ChampSelectRecentStatsStatus,
+  MatchResult,
+  RankedQueueSummary,
+  RecentMatchSummary,
+} from "../backend/types";
 import type { EffectiveLanguage, TranslationKey } from "../i18n";
 import type { LeagueChampionAbilityView, LeagueChampionDetailsView } from "../state/AppStateProvider";
 import { useAppCore, useChampSelect, useLeagueAssets } from "../state/AppStateProvider";
@@ -32,6 +38,7 @@ type PlayerView = {
   rows: MatchRowView[];
   score: number | null;
   soloRank: string | null;
+  recentStatsStatus: ChampSelectRecentStatsStatus;
   winCount: number;
 };
 
@@ -380,7 +387,9 @@ const PlayerTrack = memo(function PlayerTrack({
 
       <div className="mt-2 flex items-center justify-between px-1 text-[11px] font-bold uppercase text-slate-400">
         <span>{t("overlay.recentSix")}</span>
-        <span className="tabular-nums">{player.winCount}/{player.gameCount}</span>
+        <span className="truncate text-right tabular-nums">
+          {player.gameCount > 0 ? `${player.winCount}/${player.gameCount}` : recentStatsStatusMessage(player.recentStatsStatus, t)}
+        </span>
       </div>
       <div className="mt-1 grid gap-1">
         {player.rows.map((row) => (
@@ -727,6 +736,7 @@ function playerView(
     rows,
     score: playerScore(player),
     soloRank: rankValue(soloRank, effectiveLanguage, t),
+    recentStatsStatus: player?.recentStatsStatus ?? "notRequested",
     winCount,
   };
 }
@@ -801,10 +811,26 @@ function initialSnapshotMessage(status: InitialSnapshotStatus, t: T) {
   }
 
   if (status === "error") {
-    return t("overlay.refreshFailed");
+    return t("overlay.historyUnavailable");
   }
 
   return t("overlay.empty");
+}
+
+function recentStatsStatusMessage(status: ChampSelectRecentStatsStatus, t: T) {
+  if (status === "missingIdentity") {
+    return t("overlay.historyIdentityUnavailable");
+  }
+
+  if (status === "unavailable") {
+    return t("overlay.historyUnavailableShort");
+  }
+
+  if (status === "notRequested") {
+    return "--";
+  }
+
+  return "0/0";
 }
 
 function rankTierLabel(tier: string, language: EffectiveLanguage) {

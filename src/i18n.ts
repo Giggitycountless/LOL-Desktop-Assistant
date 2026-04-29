@@ -213,6 +213,9 @@ const en = {
   "overlay.close": "Close",
   "overlay.refresh": "Refresh",
   "overlay.refreshFailed": "Refresh failed",
+  "overlay.historyUnavailable": "Match history unavailable",
+  "overlay.historyUnavailableShort": "Unavailable",
+  "overlay.historyIdentityUnavailable": "No ID",
 } as const;
 
 export type TranslationKey = keyof typeof en;
@@ -429,6 +432,9 @@ const zh: TranslationMap = {
   "overlay.close": "关闭",
   "overlay.refresh": "刷新",
   "overlay.refreshFailed": "刷新失败",
+  "overlay.historyUnavailable": "战绩不可用",
+  "overlay.historyUnavailableShort": "不可用",
+  "overlay.historyIdentityUnavailable": "无身份",
 };
 
 const translations: Record<EffectiveLanguage, TranslationMap> = { en, zh };
