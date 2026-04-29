@@ -1047,6 +1047,10 @@ fn should_destroy_self_history_overlay_for_phase(phase: &str) -> bool {
     phase != "InProgress"
 }
 
+fn can_complete_champ_select_hydration_for_phase(phase: Option<&str>) -> bool {
+    matches!(phase, Some("ChampSelect" | "GameStart" | "InProgress"))
+}
+
 fn destroy_self_history_overlay_window<R: Runtime>(app_handle: &AppHandle<R>) {
     if let Some(window) = app_handle.get_webview_window(SELF_HISTORY_OVERLAY_WINDOW_LABEL) {
         let _ = window.destroy();
@@ -1171,7 +1175,9 @@ fn start_champ_select_hydration<R: Runtime + 'static>(
 
         if token.is_cancelled()
             || champ_select_roster_fingerprint(&snapshot) != fingerprint
-            || !current_league_phase_is(&state, "ChampSelect")
+            || !can_complete_champ_select_hydration_for_phase(
+                lock_or_recover(state.league_phase.as_ref()).as_deref(),
+            )
         {
             if !token.is_cancelled() {
                 clear_champ_select_hydration_if_current(&state, fingerprint.as_str());
