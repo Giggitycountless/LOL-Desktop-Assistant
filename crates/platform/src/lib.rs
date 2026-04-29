@@ -1987,6 +1987,30 @@ mod tests {
     }
 
     #[test]
+    fn champ_select_hydration_can_finish_during_game_transition() {
+        for phase in ["ChampSelect", "GameStart", "InProgress"] {
+            assert!(
+                can_complete_champ_select_hydration_for_phase(Some(phase)),
+                "{phase} should allow pending history hydration to finish"
+            );
+        }
+
+        for phase in [
+            None,
+            Some("Lobby"),
+            Some("Matchmaking"),
+            Some("ReadyCheck"),
+            Some("WaitingForStats"),
+            Some("EndOfGame"),
+        ] {
+            assert!(
+                !can_complete_champ_select_hydration_for_phase(phase),
+                "{phase:?} should stop pending history hydration"
+            );
+        }
+    }
+
+    #[test]
     fn champ_select_cache_clears_for_non_game_phases() {
         for phase in [
             "Lobby",
@@ -2089,6 +2113,22 @@ mod tests {
         merge_recent_stats_from_cache(&mut snapshot, &cached);
 
         assert!(snapshot.players[0].recent_stats.is_some());
+    }
+
+    #[test]
+    fn champ_select_snapshot_requires_recent_stats_to_be_complete() {
+        let mut snapshot = sample_champ_select_snapshot();
+
+        assert!(!champ_select_snapshot_has_complete_recent_stats(&snapshot));
+
+        snapshot.players[0].recent_stats = Some(ParticipantRecentStats {
+            match_count: 1,
+            average_kda: Some(3.0),
+            recent_champions: vec!["Ahri".to_string()],
+            recent_matches: Vec::new(),
+        });
+
+        assert!(champ_select_snapshot_has_complete_recent_stats(&snapshot));
     }
 
     #[test]
