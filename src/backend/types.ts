@@ -342,6 +342,8 @@ export type ParticipantRecentStats = {
   recentMatches: RecentMatchSummary[];
 };
 
+export type ChampSelectRecentStatsStatus = "notRequested" | "missingIdentity" | "loaded" | "unavailable";
+
 export type ParticipantPublicProfile = {
   gameId: number;
   participantId: number;
@@ -360,6 +362,7 @@ export type ChampSelectPlayer = {
   team: ChampSelectTeam;
   rankedQueues: RankedQueueSummary[];
   recentStats: ParticipantRecentStats | null;
+  recentStatsStatus: ChampSelectRecentStatsStatus;
 };
 
 export type ChampSelectSnapshot = {

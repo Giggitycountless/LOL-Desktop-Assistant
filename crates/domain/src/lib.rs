@@ -708,6 +708,16 @@ pub struct ChampSelectPlayer {
     pub team: ChampSelectTeam,
     pub ranked_queues: Vec<RankedQueueSummary>,
     pub recent_stats: Option<ParticipantRecentStats>,
+    pub recent_stats_status: ChampSelectRecentStatsStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChampSelectRecentStatsStatus {
+    NotRequested,
+    MissingIdentity,
+    Loaded,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

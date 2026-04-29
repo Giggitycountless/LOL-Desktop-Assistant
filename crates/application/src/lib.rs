@@ -8,15 +8,15 @@ use std::{
 
 use domain::{
     ActivityEntry, ActivityKind, AppLanguagePreference, AppSettings, AppSnapshot,
-    ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus, HealthReport,
-    ImportLocalDataResult, KdaTag, LeagueChampionDetails, LeagueChampionSummary,
+    ChampSelectRecentStatsStatus, ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus,
+    HealthReport, ImportLocalDataResult, KdaTag, LeagueChampionDetails, LeagueChampionSummary,
     LeagueClientStatus, LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind,
     LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalActivityEntry, LocalDataExport,
     MatchResult, NewActivityEntry, ParticipantMetricLeader, ParticipantPublicProfile,
-    ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison,
-    PostMatchDetail, PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals,
-    RankedChampionDataSnapshot, RankedChampionDataStatus, RankedChampionLane, RankedChampionSort,
-    RankedChampionStat, RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
+    ParticipantRecentStats, PlayerNoteSummary, PlayerNoteView, PostMatchComparison, PostMatchDetail,
+    PostMatchParticipant, PostMatchTeam, PostMatchTeamTotals, RankedChampionDataSnapshot,
+    RankedChampionDataStatus, RankedChampionLane, RankedChampionSort, RankedChampionStat,
+    RankedChampionStatsResponse, RecentChampionSummary, RecentMatchSummary,
     RecentPerformanceSummary, ServiceStatus, SettingsValues, StartupPage,
 };
 
@@ -2024,9 +2024,17 @@ pub fn get_champ_select_snapshot(
     let players = seeds
         .into_iter()
         .map(|seed| {
-            let recent_stats = recent_stats_by_puuid
-                .get(seed.puuid.as_str())
-                .and_then(|result| result.clone().ok());
+            let recent_stats_result = recent_stats_by_puuid.get(seed.puuid.as_str());
+            let recent_stats = recent_stats_result.and_then(|result| result.clone().ok());
+            let recent_stats_status = if recent_limit <= 0 {
+                ChampSelectRecentStatsStatus::NotRequested
+            } else if seed.puuid.is_empty() {
+                ChampSelectRecentStatsStatus::MissingIdentity
+            } else if recent_stats.is_some() {
+                ChampSelectRecentStatsStatus::Loaded
+            } else {
+                ChampSelectRecentStatsStatus::Unavailable
+            };
 
             domain::ChampSelectPlayer {
                 summoner_id: seed.summoner_id,
@@ -2037,6 +2045,7 @@ pub fn get_champ_select_snapshot(
                 team: seed.team,
                 ranked_queues: Vec::new(),
                 recent_stats,
+                recent_stats_status,
             }
         })
         .collect();

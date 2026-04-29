@@ -23,11 +23,11 @@ use application::{
 use domain::{
     ActivityEntry, ActivityKind, AppSettings, AppSnapshot, AutoAcceptStatus, AutoAcceptStatusState,
     ClearActivityResult, ClearPlayerNoteResult, DatabaseStatus, HealthReport,
-    ImportLocalDataResult, LeagueChampionDetails, LeagueChampionSummary, LeagueClientStatus,
-    LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot,
-    LocalDataExport, ParticipantPublicProfile, ParticipantRecentStats, PlayerNoteView,
-    PostMatchDetail, RankedChampionLane, RankedChampionSort, RankedChampionStatsResponse,
-    SettingsValues,
+    ChampSelectRecentStatsStatus, ImportLocalDataResult, LeagueChampionDetails,
+    LeagueChampionSummary, LeagueClientStatus, LeagueGameAsset, LeagueGameAssetKind,
+    LeagueImageAsset, LeagueSelfData, LeagueSelfSnapshot, LocalDataExport, ParticipantPublicProfile,
+    ParticipantRecentStats, PlayerNoteView, PostMatchDetail, RankedChampionLane, RankedChampionSort,
+    RankedChampionStatsResponse, SettingsValues,
 };
 use serde::{Deserialize, Serialize};
 use storage::SqliteStore;
@@ -2665,6 +2665,7 @@ mod tests {
                 team: ChampSelectTeam::Ally,
                 ranked_queues: Vec::new(),
                 recent_stats: None,
+                recent_stats_status: ChampSelectRecentStatsStatus::MissingIdentity,
             }],
             cached_at: "1770000000".to_string(),
         }
