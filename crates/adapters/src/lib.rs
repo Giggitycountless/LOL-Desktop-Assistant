@@ -3251,6 +3251,44 @@ mod tests {
     }
 
     #[test]
+    fn gameflow_session_maps_direct_player_identities() {
+        let session = map_gameflow_session(LcuGameflowSession {
+            game_data: Some(LcuGameflowGameData {
+                team_one: vec![LcuGameflowParticipant {
+                    summoner_id: Some(10),
+                    puuid: Some("puuid-10".to_string()),
+                    summoner_name: Some("Ally".to_string()),
+                    display_name: None,
+                    game_name: Some("Ally".to_string()),
+                    tag_line: Some("NA1".to_string()),
+                    champion_id: Some(103),
+                    selected_champion_id: None,
+                }],
+                team_two: vec![LcuGameflowParticipant {
+                    summoner_id: Some(20),
+                    puuid: Some("puuid-20".to_string()),
+                    summoner_name: Some("Enemy".to_string()),
+                    display_name: None,
+                    game_name: Some("Enemy".to_string()),
+                    tag_line: Some("NA1".to_string()),
+                    champion_id: None,
+                    selected_champion_id: Some(222),
+                }],
+                player_champion_selections: Vec::new(),
+            }),
+        })
+        .expect("gameflow session maps");
+
+        assert_eq!(session.source, ChampSelectSessionSource::GameflowSession);
+        assert_eq!(session.players.len(), 2);
+        assert_eq!(session.players[0].puuid.as_deref(), Some("puuid-10"));
+        assert_eq!(session.players[0].display_name, "Ally#NA1");
+        assert_eq!(session.players[0].champion_id, Some(103));
+        assert_eq!(session.players[1].puuid.as_deref(), Some("puuid-20"));
+        assert_eq!(session.players[1].champion_id, Some(222));
+    }
+
+    #[test]
     fn image_asset_paths_are_fixed_local_game_data_paths() {
         assert_eq!(
             profile_icon_path(29),

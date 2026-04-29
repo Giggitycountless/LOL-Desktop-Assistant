@@ -2001,7 +2001,11 @@ pub fn get_champ_select_snapshot(
         puuids.sort_unstable();
         puuids.dedup();
         recent_stats_requested = puuids.len();
-        reader.participant_recent_stats_batch(&puuids, recent_limit)
+        if puuids.is_empty() {
+            HashMap::new()
+        } else {
+            reader.participant_recent_stats_batch(&puuids, recent_limit)
+        }
     };
     let recent_stats_success = recent_stats_by_puuid
         .values()
@@ -2602,6 +2606,74 @@ mod tests {
 
         assert!(player_one.recent_stats.is_some());
         assert!(player_two.recent_stats.is_none());
+        assert_eq!(
+            player_two.recent_stats_status,
+            ChampSelectRecentStatsStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn champ_select_snapshot_matches_bare_names_to_riot_id_display_names() {
+        let mut reader = FakeLeagueClientReader::with_champ_select_data(
+            ChampSelectSessionData {
+                ally_ids: Vec::new(),
+                enemy_ids: Vec::new(),
+                champion_selections: HashMap::new(),
+                ally_names: vec!["Player One".to_string()],
+                enemy_names: Vec::new(),
+                champion_selections_by_name: HashMap::new(),
+                source: ChampSelectSessionSource::LiveClient,
+                players: Vec::new(),
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+        reader.summoners_by_name = vec![SummonerBatchEntry {
+            summoner_id: 10,
+            puuid: "puuid-10".to_string(),
+            display_name: "Player One#NA1".to_string(),
+        }];
+
+        let snapshot = get_champ_select_snapshot(&reader, 6).expect("champ select snapshot reads");
+
+        assert_eq!(snapshot.players.len(), 1);
+        assert_eq!(snapshot.players[0].display_name, "Player One#NA1");
+        assert_eq!(
+            snapshot.players[0].recent_stats_status,
+            ChampSelectRecentStatsStatus::Loaded
+        );
+        assert_eq!(
+            reader.recent_stats_batch_calls(),
+            vec![vec!["puuid-10".to_string()]]
+        );
+    }
+
+    #[test]
+    fn champ_select_snapshot_marks_missing_identity() {
+        let reader = FakeLeagueClientReader::with_champ_select_data(
+            ChampSelectSessionData {
+                ally_ids: Vec::new(),
+                enemy_ids: Vec::new(),
+                champion_selections: HashMap::new(),
+                ally_names: vec!["Unknown Player".to_string()],
+                enemy_names: Vec::new(),
+                champion_selections_by_name: HashMap::new(),
+                source: ChampSelectSessionSource::LiveClient,
+                players: Vec::new(),
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let snapshot = get_champ_select_snapshot(&reader, 6).expect("champ select snapshot reads");
+
+        assert_eq!(snapshot.players.len(), 1);
+        assert!(snapshot.players[0].recent_stats.is_none());
+        assert_eq!(
+            snapshot.players[0].recent_stats_status,
+            ChampSelectRecentStatsStatus::MissingIdentity
+        );
+        assert!(reader.recent_stats_batch_calls().is_empty());
     }
 
     #[test]
@@ -3590,7 +3662,9 @@ mod tests {
             self.summoners_by_name
                 .iter()
                 .filter(|entry| {
-                    normalized_names.contains(&normalize_player_name(entry.display_name.as_str()))
+                    summoner_name_lookup_keys(entry.display_name.as_str())
+                        .iter()
+                        .any(|key| normalized_names.contains(key))
                 })
                 .cloned()
                 .collect()
