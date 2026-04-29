@@ -59,6 +59,9 @@ export function SelfHistoryOverlay() {
   const [isOverlayAllowed, setIsOverlayAllowed] = useState(false);
   const [initialSnapshotStatus, setInitialSnapshotStatus] = useState<InitialSnapshotStatus>("loading");
   const players = champSelectSnapshot?.players ?? [];
+  const hasPlayers = players.length > 0;
+  const hasRecentStats = players.some((player) => player.recentStats !== null);
+  const isHistoryLoading = hasPlayers && !hasRecentStats && initialSnapshotStatus === "loading";
   const selectedChampionDetails = selectedChampionId ? championDetailsById[selectedChampionId] : undefined;
   const model = useMemo(
     () => createOverlayModel(players, leagueImages.championIcons, effectiveLanguage, t),
@@ -104,7 +107,7 @@ export function SelfHistoryOverlay() {
     setInitialSnapshotStatus("loading");
     void refreshChampSelectSnapshot().then((didRefresh) => {
       if (!wasCancelled) {
-        setInitialSnapshotStatus(didRefresh ? "ready" : "error");
+        setInitialSnapshotStatus(didRefresh ? "loading" : "error");
       }
     });
 
@@ -114,10 +117,10 @@ export function SelfHistoryOverlay() {
   }, [isOverlayAllowed, refreshChampSelectSnapshot]);
 
   useEffect(() => {
-    if (players.length > 0) {
+    if (hasRecentStats) {
       setInitialSnapshotStatus("ready");
     }
-  }, [players.length]);
+  }, [hasRecentStats]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -168,7 +171,7 @@ export function SelfHistoryOverlay() {
       const didRefresh = await refreshChampSelectSnapshot();
       setIsRefreshingChampSelect(false);
       setRefreshFailed(!didRefresh);
-      setInitialSnapshotStatus(didRefresh ? "ready" : "error");
+      setInitialSnapshotStatus(didRefresh ? "loading" : "error");
     },
     [isRefreshingChampSelect, refreshChampSelectSnapshot],
   );
@@ -244,7 +247,7 @@ export function SelfHistoryOverlay() {
         />
       </div>
 
-      {players.length === 0 && (
+      {(players.length === 0 || isHistoryLoading) && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 rounded-md border border-slate-200 bg-white/95 px-5 py-3 text-center text-sm font-bold text-slate-500 shadow-lg">
           {initialSnapshotMessage(initialSnapshotStatus, t)}
         </div>
