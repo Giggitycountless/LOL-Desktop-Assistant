@@ -379,11 +379,13 @@ pub struct ChampSelectSessionData {
     pub enemy_names: Vec<String>,
     pub champion_selections_by_name: std::collections::HashMap<String, i64>,
     pub source: ChampSelectSessionSource,
+    pub players: Vec<ChampSelectSessionPlayer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChampSelectSessionSource {
     ChampSelect,
+    GameflowSession,
     LiveClient,
 }
 
@@ -391,9 +393,19 @@ impl ChampSelectSessionSource {
     fn as_log_label(self) -> &'static str {
         match self {
             Self::ChampSelect => "champ-select",
+            Self::GameflowSession => "gameflow-session",
             Self::LiveClient => "live-client",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChampSelectSessionPlayer {
+    pub summoner_id: Option<i64>,
+    pub puuid: Option<String>,
+    pub display_name: String,
+    pub champion_id: Option<i64>,
+    pub team: domain::ChampSelectTeam,
 }
 
 #[derive(Debug, Clone)]
@@ -1836,19 +1848,68 @@ pub fn get_champ_select_snapshot(
     let summoners_by_name: HashMap<String, SummonerBatchEntry> = reader
         .summoners_by_names(&all_names)
         .into_iter()
-        .map(|summoner| {
-            (
-                normalize_player_name(summoner.display_name.as_str()),
-                summoner,
-            )
+        .flat_map(|summoner| {
+            summoner_name_lookup_keys(summoner.display_name.as_str())
+                .into_iter()
+                .map(move |name| (name, summoner.clone()))
         })
         .collect();
 
     let mut seeds = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut seen_names = HashSet::new();
+    let mut seen_puuids = HashSet::new();
+
+    for (index, player) in session.players.iter().enumerate() {
+        let display_name = if player.display_name.trim().is_empty() {
+            player
+                .summoner_id
+                .map(|id| format!("Summoner {id}"))
+                .unwrap_or_else(|| format!("Player {}", index + 1))
+        } else {
+            player.display_name.clone()
+        };
+        let normalized_name = normalize_player_name(display_name.as_str());
+        let summoner_id = player
+            .summoner_id
+            .filter(|id| *id > 0)
+            .unwrap_or_else(|| negative_stable_id(display_name.as_str()));
+        let puuid = player
+            .puuid
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_default();
+
+        if !puuid.is_empty() && !seen_puuids.insert(puuid.clone()) {
+            continue;
+        }
+        if summoner_id > 0 && seen_ids.contains(&summoner_id) {
+            continue;
+        }
+        if !normalized_name.is_empty() && seen_names.contains(&normalized_name) {
+            continue;
+        }
+
+        if summoner_id > 0 {
+            seen_ids.insert(summoner_id);
+        }
+        if !normalized_name.is_empty() {
+            seen_names.insert(normalized_name);
+        }
+        seeds.push(PlayerSeed {
+            summoner_id,
+            puuid,
+            display_name,
+            champion_id: player.champion_id,
+            team: player.team.clone(),
+        });
+    }
 
     for summoner_id in all_ids {
+        if seen_ids.contains(&summoner_id) {
+            continue;
+        }
         let summoner = summoners_by_id.get(&summoner_id);
         let team = if session.ally_ids.contains(&summoner_id) {
             domain::ChampSelectTeam::Ally
@@ -1863,6 +1924,9 @@ pub fn get_champ_select_snapshot(
             .map(|value| value.display_name.clone())
             .unwrap_or_else(|| format!("Summoner {summoner_id}"));
 
+        if !puuid.is_empty() {
+            seen_puuids.insert(puuid.clone());
+        }
         seen_ids.insert(summoner_id);
         seen_names.insert(normalize_player_name(display_name.as_str()));
         seeds.push(PlayerSeed {
@@ -2125,6 +2189,23 @@ pub fn run_champ_select_automation(
 
 fn normalize_player_name(value: &str) -> String {
     value.trim().to_ascii_lowercase()
+}
+
+fn summoner_name_lookup_keys(value: &str) -> Vec<String> {
+    let normalized = normalize_player_name(value);
+    let mut keys = Vec::new();
+    if !normalized.is_empty() {
+        keys.push(normalized.clone());
+    }
+
+    if let Some((game_name, _)) = value.split_once('#') {
+        let normalized_game_name = normalize_player_name(game_name);
+        if !normalized_game_name.is_empty() && normalized_game_name != normalized {
+            keys.push(normalized_game_name);
+        }
+    }
+
+    keys
 }
 
 fn is_ready_check_active(reader: &impl LeagueClientReader) -> Result<bool, ApplicationError> {
@@ -2440,6 +2521,7 @@ mod tests {
                 enemy_names: Vec::new(),
                 champion_selections_by_name: HashMap::new(),
                 source: ChampSelectSessionSource::ChampSelect,
+                players: Vec::new(),
             },
             vec![
                 SummonerBatchEntry {
@@ -2480,6 +2562,7 @@ mod tests {
                 enemy_names: Vec::new(),
                 champion_selections_by_name: HashMap::new(),
                 source: ChampSelectSessionSource::ChampSelect,
+                players: Vec::new(),
             },
             vec![
                 SummonerBatchEntry {
@@ -3251,6 +3334,7 @@ mod tests {
                     enemy_names: Vec::new(),
                     champion_selections_by_name: HashMap::new(),
                     source: ChampSelectSessionSource::ChampSelect,
+                    players: Vec::new(),
                 },
                 data,
                 completed_match: Mutex::new(None),
@@ -3278,6 +3362,7 @@ mod tests {
                     enemy_names: Vec::new(),
                     champion_selections_by_name: HashMap::new(),
                     source: ChampSelectSessionSource::ChampSelect,
+                    players: Vec::new(),
                 },
                 data: LeagueSelfData {
                     status: connected_status(),

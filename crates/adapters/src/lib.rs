@@ -7,17 +7,17 @@ use std::{
 };
 
 use application::{
-    ChampSelectSessionData, ChampSelectSessionSource, LeagueClientReadError, LeagueClientReader,
-    RankedChampionDataError, RankedChampionDataProvider, RankedChampionRefreshInput,
-    SummonerBatchEntry,
+    ChampSelectSessionData, ChampSelectSessionPlayer, ChampSelectSessionSource,
+    LeagueClientReadError, LeagueClientReader, RankedChampionDataError, RankedChampionDataProvider,
+    RankedChampionRefreshInput, SummonerBatchEntry,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use domain::{
-    CurrentSummonerProfile, LeagueChampionAbility, LeagueChampionDetails, LeagueChampionSummary,
-    LeagueClientConnection, LeagueClientPhase, LeagueClientStatus, LeagueDataSection,
-    LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset, LeagueSelfData,
-    MatchResult, ParticipantRecentStats, RankedChampionDataSnapshot, RankedChampionLane,
-    RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
+    ChampSelectTeam, CurrentSummonerProfile, LeagueChampionAbility, LeagueChampionDetails,
+    LeagueChampionSummary, LeagueClientConnection, LeagueClientPhase, LeagueClientStatus,
+    LeagueDataSection, LeagueDataWarning, LeagueGameAsset, LeagueGameAssetKind, LeagueImageAsset,
+    LeagueSelfData, MatchResult, ParticipantRecentStats, RankedChampionDataSnapshot,
+    RankedChampionLane, RankedChampionStat, RankedQueue, RankedQueueSummary, RecentMatchSummary,
 };
 use futures_util::{SinkExt, Stream, StreamExt};
 use rayon::prelude::*;
@@ -626,14 +626,14 @@ impl LocalLeagueClient {
         let mut enemy_names = Vec::new();
 
         for player in players {
-            if player.summoner_name.trim().is_empty() {
+            let Some(display_name) = player.display_name() else {
                 continue;
-            }
+            };
 
             if strings_match(Some(active_team.as_str()), Some(player.team.as_str())) {
-                ally_names.push(player.summoner_name);
+                ally_names.push(display_name);
             } else {
-                enemy_names.push(player.summoner_name);
+                enemy_names.push(display_name);
             }
         }
 
@@ -645,6 +645,22 @@ impl LocalLeagueClient {
             enemy_names,
             champion_selections_by_name: HashMap::new(),
             source: ChampSelectSessionSource::LiveClient,
+            players: Vec::new(),
+        })
+    }
+
+    fn read_gameflow_session(
+        &self,
+        session: &LcuSession,
+    ) -> Result<ChampSelectSessionData, LeagueClientReadError> {
+        let gameflow = session
+            .get_json::<LcuGameflowSession>("/lol-gameflow/v1/session")
+            .map_err(read_error_from_request)?;
+
+        map_gameflow_session(gameflow).ok_or_else(|| {
+            LeagueClientReadError::Integration(
+                "League gameflow session did not include player identities".to_string(),
+            )
         })
     }
 
@@ -836,6 +852,9 @@ impl LeagueClientReader for LocalLeagueClient {
             match session.get_json::<LcuChampSelectSession>("/lol-champ-select/v1/session") {
                 Ok(value) => value,
                 Err(error) => {
+                    if let Ok(session) = self.read_gameflow_session(&session) {
+                        return Ok(session);
+                    }
                     return self
                         .read_live_client_session()
                         .map_err(|_| read_error_from_request(error));
@@ -887,6 +906,7 @@ impl LeagueClientReader for LocalLeagueClient {
                 .collect(),
             champion_selections_by_name,
             source: ChampSelectSessionSource::ChampSelect,
+            players: Vec::new(),
         })
     }
 
@@ -1702,6 +1722,46 @@ struct LcuChampSelectSession {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct LcuGameflowSession {
+    game_data: Option<LcuGameflowGameData>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuGameflowGameData {
+    #[serde(default)]
+    team_one: Vec<LcuGameflowParticipant>,
+    #[serde(default)]
+    team_two: Vec<LcuGameflowParticipant>,
+    #[serde(default)]
+    player_champion_selections: Vec<LcuGameflowChampionSelection>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuGameflowParticipant {
+    summoner_id: Option<i64>,
+    puuid: Option<String>,
+    summoner_name: Option<String>,
+    display_name: Option<String>,
+    game_name: Option<String>,
+    tag_line: Option<String>,
+    champion_id: Option<i64>,
+    selected_champion_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LcuGameflowChampionSelection {
+    summoner_id: Option<i64>,
+    puuid: Option<String>,
+    champion_id: Option<i64>,
+    selected_champion_id: Option<i64>,
+    team_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LcuChampSelectAction {
     id: Option<i64>,
     actor_cell_id: Option<i64>,
@@ -1745,6 +1805,7 @@ struct LcuSummonerBatch {
 struct GameClientPlayer {
     summoner_name: String,
     team: String,
+    riot_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1766,6 +1827,176 @@ impl LcuChampSelectMember {
                 .map(str::to_string),
         }
     }
+}
+
+impl GameClientPlayer {
+    fn display_name(&self) -> Option<String> {
+        non_empty(self.riot_id.as_deref())
+            .or_else(|| non_empty(Some(self.summoner_name.as_str())))
+            .map(str::to_string)
+    }
+}
+
+fn map_gameflow_session(session: LcuGameflowSession) -> Option<ChampSelectSessionData> {
+    let data = session.game_data?;
+    let mut ally_ids = Vec::new();
+    let mut enemy_ids = Vec::new();
+    let mut ally_names = Vec::new();
+    let mut enemy_names = Vec::new();
+    let mut champion_selections = HashMap::new();
+    let mut champion_selections_by_name = HashMap::new();
+    let mut players = Vec::new();
+
+    collect_gameflow_team(
+        &data.team_one,
+        ChampSelectTeam::Ally,
+        &data.player_champion_selections,
+        &mut ally_ids,
+        &mut ally_names,
+        &mut champion_selections,
+        &mut champion_selections_by_name,
+        &mut players,
+    );
+    collect_gameflow_team(
+        &data.team_two,
+        ChampSelectTeam::Enemy,
+        &data.player_champion_selections,
+        &mut enemy_ids,
+        &mut enemy_names,
+        &mut champion_selections,
+        &mut champion_selections_by_name,
+        &mut players,
+    );
+
+    if players.is_empty() {
+        for (index, selection) in data.player_champion_selections.iter().enumerate() {
+            let team = match selection.team_id {
+                Some(100) => ChampSelectTeam::Ally,
+                Some(200) => ChampSelectTeam::Enemy,
+                _ if index < 5 => ChampSelectTeam::Ally,
+                _ => ChampSelectTeam::Enemy,
+            };
+            let display_name = selection
+                .summoner_id
+                .map(|id| format!("Summoner {id}"))
+                .unwrap_or_else(|| format!("Player {}", index + 1));
+            let champion_id = positive_id(selection.champion_id.or(selection.selected_champion_id));
+
+            if let Some(summoner_id) = positive_id(selection.summoner_id) {
+                match team {
+                    ChampSelectTeam::Ally => ally_ids.push(summoner_id),
+                    ChampSelectTeam::Enemy => enemy_ids.push(summoner_id),
+                }
+                if let Some(champion_id) = champion_id {
+                    champion_selections.insert(summoner_id, champion_id);
+                }
+            }
+
+            match team {
+                ChampSelectTeam::Ally => ally_names.push(display_name.clone()),
+                ChampSelectTeam::Enemy => enemy_names.push(display_name.clone()),
+            }
+            players.push(ChampSelectSessionPlayer {
+                summoner_id: positive_id(selection.summoner_id),
+                puuid: non_empty(selection.puuid.as_deref()).map(str::to_string),
+                display_name,
+                champion_id,
+                team,
+            });
+        }
+    }
+
+    if players.is_empty() {
+        return None;
+    }
+
+    Some(ChampSelectSessionData {
+        ally_ids,
+        enemy_ids,
+        champion_selections,
+        ally_names,
+        enemy_names,
+        champion_selections_by_name,
+        source: ChampSelectSessionSource::GameflowSession,
+        players,
+    })
+}
+
+fn collect_gameflow_team(
+    team_players: &[LcuGameflowParticipant],
+    team: ChampSelectTeam,
+    selections: &[LcuGameflowChampionSelection],
+    team_ids: &mut Vec<i64>,
+    team_names: &mut Vec<String>,
+    champion_selections: &mut HashMap<i64, i64>,
+    champion_selections_by_name: &mut HashMap<String, i64>,
+    players: &mut Vec<ChampSelectSessionPlayer>,
+) {
+    for (index, participant) in team_players.iter().enumerate() {
+        let display_name = gameflow_participant_display_name(participant).unwrap_or_else(|| {
+            participant
+                .summoner_id
+                .map(|id| format!("Summoner {id}"))
+                .unwrap_or_else(|| format!("Player {}", index + 1))
+        });
+        let champion_id = gameflow_participant_champion_id(participant, selections);
+        let summoner_id = positive_id(participant.summoner_id);
+
+        if let Some(summoner_id) = summoner_id {
+            team_ids.push(summoner_id);
+            if let Some(champion_id) = champion_id {
+                champion_selections.insert(summoner_id, champion_id);
+            }
+        }
+        if let Some(champion_id) = champion_id {
+            champion_selections_by_name
+                .insert(normalize_player_name(display_name.as_str()), champion_id);
+        }
+        team_names.push(display_name.clone());
+        players.push(ChampSelectSessionPlayer {
+            summoner_id,
+            puuid: non_empty(participant.puuid.as_deref()).map(str::to_string),
+            display_name,
+            champion_id,
+            team: team.clone(),
+        });
+    }
+}
+
+fn gameflow_participant_display_name(participant: &LcuGameflowParticipant) -> Option<String> {
+    match (
+        non_empty(participant.game_name.as_deref()),
+        non_empty(participant.tag_line.as_deref()),
+    ) {
+        (Some(game_name), Some(tag_line)) => Some(format!("{game_name}#{tag_line}")),
+        (Some(game_name), None) => Some(game_name.to_string()),
+        _ => non_empty(participant.display_name.as_deref())
+            .or_else(|| non_empty(participant.summoner_name.as_deref()))
+            .map(str::to_string),
+    }
+}
+
+fn gameflow_participant_champion_id(
+    participant: &LcuGameflowParticipant,
+    selections: &[LcuGameflowChampionSelection],
+) -> Option<i64> {
+    positive_id(participant.champion_id.or(participant.selected_champion_id)).or_else(|| {
+        selections.iter().find_map(|selection| {
+            let same_puuid = non_empty(participant.puuid.as_deref())
+                .is_some_and(|puuid| strings_match(Some(puuid), selection.puuid.as_deref()));
+            let same_summoner = ids_match(participant.summoner_id, selection.summoner_id);
+
+            if same_puuid || same_summoner {
+                positive_id(selection.champion_id.or(selection.selected_champion_id))
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn positive_id(value: Option<i64>) -> Option<i64> {
+    value.filter(|inner| *inner > 0)
 }
 
 fn apply_champ_select_action(
