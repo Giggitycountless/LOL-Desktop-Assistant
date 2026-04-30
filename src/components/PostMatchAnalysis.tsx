@@ -1,15 +1,13 @@
+import { ChampionImage, ResultBadge } from "./common";
 import { leagueGameAssetKey, useAppCore, type LeagueGameAssetView } from "../state/AppStateProvider";
 import type {
   LeagueGameAssetKind,
-  MatchResult,
   ParticipantMetricLeader,
   PostMatchDetail,
   PostMatchParticipant,
   PostMatchTeam,
 } from "../backend/types";
-import type { TranslationKey } from "../i18n";
-
-type T = (key: TranslationKey) => string;
+import { formatResult, initials, type T } from "../utils/formatting";
 
 export function PostMatchAnalysis({
   detail,
@@ -79,7 +77,7 @@ function TeamBlock({
             {team.totals.kills}/{team.totals.deaths}/{team.totals.assists} - {formatCompact(team.totals.goldEarned)} {t("analysis.gold")}
           </p>
         </div>
-        <ResultBadge result={team.result} t={t} />
+        <ResultBadge result={team.result} />
       </div>
 
       <div className="overflow-x-auto pb-2">
@@ -134,7 +132,7 @@ function ParticipantRow({
       type="button"
     >
       <div className="flex min-w-0 items-center gap-2">
-        <ChampionImage championName={participant.championName} imageUrl={imageUrl} />
+        <ChampionImage championName={participant.championName} imageUrl={imageUrl} size="xs" />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-sm font-semibold text-zinc-950">{participant.displayName}</p>
@@ -307,40 +305,6 @@ function Leader({ label, leader }: { label: string; leader: ParticipantMetricLea
   );
 }
 
-function ChampionImage({ championName, imageUrl }: { championName: string; imageUrl: string | undefined }) {
-  if (imageUrl) {
-    return <img alt={`${championName} icon`} className="h-9 w-9 shrink-0 rounded-md border border-zinc-200 object-cover" src={imageUrl} />;
-  }
-
-  return (
-    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500">
-      {initials(championName)}
-    </div>
-  );
-}
-
-function ResultBadge({ result, t }: { result: MatchResult; t: T }) {
-  const tone =
-    result === "win"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-      : result === "loss"
-        ? "border-rose-200 bg-rose-50 text-rose-800"
-        : "border-zinc-200 bg-white text-zinc-600";
-
-  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result, t)}</span>;
-}
-
-function formatResult(result: MatchResult, t: T) {
-  switch (result) {
-    case "win":
-      return t("common.win");
-    case "loss":
-      return t("common.loss");
-    default:
-      return t("common.unknown");
-  }
-}
-
 function formatCompact(value: number) {
   if (value >= 1000) {
     return `${(value / 1000).toFixed(1)}k`;
@@ -364,11 +328,3 @@ function assetLabel(kind: LeagueGameAssetKind, t: T) {
   }
 }
 
-function initials(value: string) {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
