@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 
 import { PostMatchAnalysis } from "./PostMatchAnalysis";
+import { ChampionImage, StatePanel, ResultBadge } from "./common";
 import { useAppCore, useLeagueAssets, type LeagueGameAssetView } from "../state/AppStateProvider";
-import type { MatchResult, PostMatchDetail, RecentMatchSummary } from "../backend/types";
-import type { TranslationKey } from "../i18n";
+import type { PostMatchDetail, RecentMatchSummary } from "../backend/types";
 import { emitParticipantProfileChanged, openParticipantProfileWindow } from "../windows/participantProfileWindow";
-
-type T = (key: TranslationKey) => string;
+import { formatResult, formatTimestamp, initials, type T } from "../utils/formatting";
 
 export type SelectedParticipant = {
   gameId: number;
@@ -299,7 +298,7 @@ function RecentMatchRow({
         onClick={onToggle}
         type="button"
       >
-        <ChampionImage championName={match.championName} imageUrl={imageUrl} />
+        <ChampionImage championName={match.championName} imageUrl={imageUrl} size="sm" />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-sm font-semibold text-zinc-950">{match.championName}</p>
@@ -342,18 +341,6 @@ function RecentMatchRow({
   );
 }
 
-function ChampionImage({ championName, imageUrl }: { championName: string; imageUrl: string | undefined }) {
-  if (imageUrl) {
-    return <img alt={`${championName} icon`} className="h-10 w-10 shrink-0 rounded-md border border-zinc-200 object-cover" src={imageUrl} />;
-  }
-
-  return (
-    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-xs font-semibold text-zinc-500">
-      {initials(championName)}
-    </div>
-  );
-}
-
 function ProfileImage({ displayName, imageUrl }: { displayName: string; imageUrl: string | undefined }) {
   if (imageUrl) {
     return <img alt={`${displayName} profile icon`} className="h-14 w-14 shrink-0 rounded-md border border-zinc-200 object-cover" src={imageUrl} />;
@@ -371,27 +358,6 @@ function Detail({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
       <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</p>
       <p className="mt-1 text-sm font-semibold text-zinc-950">{value}</p>
-    </div>
-  );
-}
-
-function ResultBadge({ result }: { result: MatchResult }) {
-  const { t } = useAppCore();
-  const tone =
-    result === "win"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-      : result === "loss"
-        ? "border-rose-200 bg-rose-50 text-rose-800"
-        : "border-zinc-200 bg-white text-zinc-600";
-
-  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result, t)}</span>;
-}
-
-function StatePanel({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
-      <p className="text-sm font-semibold text-zinc-950">{title}</p>
-      <p className="mt-1 text-sm text-zinc-500">{body}</p>
     </div>
   );
 }
@@ -414,32 +380,6 @@ function formatAverageKda(value: number | null | undefined, t: T) {
   return value === null || value === undefined ? t("common.unavailable") : value.toFixed(1);
 }
 
-function formatResult(result: MatchResult, t: T) {
-  switch (result) {
-    case "win":
-      return t("common.win");
-    case "loss":
-      return t("common.loss");
-    default:
-      return t("common.unknown");
-  }
-}
-
-function formatTimestamp(value: string | null | undefined, t: T) {
-  if (!value) {
-    return t("common.pending");
-  }
-
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric) ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1_000) : new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
-
 function formatDuration(value: number | null, t: T) {
   if (!value || value < 0) {
     return t("common.unavailable");
@@ -455,11 +395,3 @@ function participantProfileKey(gameId: number, participantId: number) {
   return `${gameId}:${participantId}`;
 }
 
-function initials(value: string) {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
