@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 
 import { useAppCore, useLeagueAssets } from "../state/AppStateProvider";
+import { Metric, RefreshIcon } from "../components/common";
+import { formatTimestamp, type T } from "../utils/formatting";
 import type { KdaTag, RankedQueue, RankedQueueSummary, RecentChampionSummary } from "../backend/types";
 import type { TranslationKey } from "../i18n";
 
@@ -172,35 +174,12 @@ function KdaBadge({ tag, value, t }: { tag: KdaTag; value: number | null; t: (ke
   return <span className={["rounded-md border px-2.5 py-1 text-xs font-semibold", tone].join(" ")}>{label}</span>;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-zinc-950">{value}</p>
-    </div>
-  );
-}
-
 function StatePanel({ title, body }: { title: string; body: string }) {
   return (
     <section className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm">
       <h2 className="text-base font-semibold text-zinc-950">{title}</h2>
       <p className="mt-2 text-sm text-zinc-500">{body}</p>
     </section>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24">
-      <path
-        d="M20 12a8 8 0 0 1-13.6 5.7M4 12A8 8 0 0 1 17.6 6.3M18 3v4h-4M6 21v-4h4"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
   );
 }
 
@@ -260,23 +239,6 @@ function formatLeaguePhase(phase: string, t: (key: TranslationKey) => string) {
     default:
       return t("common.unavailable");
   }
-}
-
-function formatTimestamp(value: string | null | undefined, t: (key: TranslationKey) => string) {
-  if (!value) {
-    return t("common.pending");
-  }
-
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric)
-    ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1_000)
-    : new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
 }
 
 function initials(value: string) {
