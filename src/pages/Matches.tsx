@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { PostMatchAnalysis } from "../components/PostMatchAnalysis";
+import { ChampionImage, StatePanel, ResultBadge, RefreshIcon } from "../components/common";
 import { useAppCore, useLeagueAssets, type LeagueGameAssetView } from "../state/AppStateProvider";
 import { listenWithCleanup } from "../backend/events";
 import {
@@ -13,9 +14,7 @@ import type {
   PostMatchDetail,
   RecentMatchSummary,
 } from "../backend/types";
-import type { TranslationKey } from "../i18n";
-
-type T = (key: TranslationKey) => string;
+import { formatTimestamp, formatResult, type T } from "../utils/formatting";
 
 type SelectedParticipant = {
   gameId: number;
@@ -203,7 +202,7 @@ function MatchCard({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <p className="truncate text-sm font-semibold text-zinc-950">{match.championName}</p>
-              <ResultBadge result={match.result} t={t} />
+              <ResultBadge result={match.result} />
             </div>
             <p className="mt-1 truncate text-xs text-zinc-500">
               {match.queueName ?? "Unknown queue"} - {formatTimestamp(match.playedAt, t)}
@@ -244,28 +243,6 @@ function MatchCard({
   );
 }
 
-function ChampionImage({
-  championName,
-  imageUrl,
-  size = "md",
-}: {
-  championName: string;
-  imageUrl: string | undefined;
-  size?: "sm" | "md";
-}) {
-  const sizeClass = size === "sm" ? "h-9 w-9" : "h-12 w-12";
-
-  if (imageUrl) {
-    return <img alt={`${championName} icon`} className={`${sizeClass} shrink-0 rounded-md border border-zinc-200 object-cover`} src={imageUrl} />;
-  }
-
-  return (
-    <div className={`${sizeClass} flex shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500`}>
-      {initials(championName)}
-    </div>
-  );
-}
-
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
@@ -275,26 +252,6 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StatePanel({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-4">
-      <p className="text-sm font-semibold text-zinc-950">{title}</p>
-      <p className="mt-1 text-sm text-zinc-500">{body}</p>
-    </div>
-  );
-}
-
-function ResultBadge({ result, t }: { result: MatchResult; t: T }) {
-  const tone =
-    result === "win"
-      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-      : result === "loss"
-        ? "border-rose-200 bg-rose-50 text-rose-800"
-        : "border-zinc-200 bg-white text-zinc-600";
-
-  return <span className={["rounded-md border px-2 py-0.5 text-xs font-semibold", tone].join(" ")}>{formatResult(result, t)}</span>;
-}
-
 function StatusBadge({ result, t }: { result: MatchResult; t: T }) {
   const label = result === "unknown" ? t("common.pending") : t("matches.loaded");
 
@@ -302,20 +259,6 @@ function StatusBadge({ result, t }: { result: MatchResult; t: T }) {
     <span className="inline-flex h-10 items-center rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm font-medium text-zinc-700">
       {label}
     </span>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24">
-      <path
-        d="M20 12a8 8 0 0 1-13.6 5.7M4 12A8 8 0 0 1 17.6 6.3M18 3v4h-4M6 21v-4h4"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
   );
 }
 
@@ -331,17 +274,6 @@ function ChevronIcon({ expanded }: { expanded: boolean }) {
       />
     </svg>
   );
-}
-
-function formatResult(result: MatchResult, t: T) {
-  switch (result) {
-    case "win":
-      return t("common.win");
-    case "loss":
-      return t("common.loss");
-    default:
-      return t("common.unknown");
-  }
 }
 
 function matchCountLabel(count: number, isLoading: boolean, t: T) {
@@ -364,23 +296,6 @@ function emptyMatchesBody(phase: string, t: T) {
   return t("matches.unavailableHint");
 }
 
-function formatTimestamp(value: string | null | undefined, t: T) {
-  if (!value) {
-    return t("common.pending");
-  }
-
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric)
-    ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1_000)
-    : new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
-
 function formatDuration(value: number | null, t: T) {
   if (!value || value < 0) {
     return t("common.unavailable");
@@ -392,11 +307,3 @@ function formatDuration(value: number | null, t: T) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function initials(value: string) {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
