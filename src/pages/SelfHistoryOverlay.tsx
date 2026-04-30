@@ -116,7 +116,7 @@ export function SelfHistoryOverlay() {
     setInitialSnapshotStatus("loading");
     void refreshChampSelectSnapshot().then((didRefresh) => {
       if (!wasCancelled) {
-        setInitialSnapshotStatus(didRefresh ? "loading" : "error");
+        setInitialSnapshotStatus(didRefresh ? "ready" : "error");
       }
     });
 
@@ -191,7 +191,7 @@ export function SelfHistoryOverlay() {
       const didRefresh = await refreshChampSelectSnapshot();
       setIsRefreshingChampSelect(false);
       setRefreshFailed(!didRefresh);
-      setInitialSnapshotStatus(didRefresh ? "loading" : "error");
+      setInitialSnapshotStatus(didRefresh ? "ready" : "error");
     },
     [isRefreshingChampSelect, refreshChampSelectSnapshot],
   );
