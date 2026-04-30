@@ -8,16 +8,15 @@ import type {
   RankedQueueSummary,
   RecentMatchSummary,
 } from "../backend/types";
-import type { EffectiveLanguage, TranslationKey } from "../i18n";
+import type { EffectiveLanguage } from "../i18n";
 import type { LeagueChampionAbilityView, LeagueChampionDetailsView } from "../state/AppStateProvider";
 import { useAppCore, useChampSelect, useLeagueAssets } from "../state/AppStateProvider";
 import { canOpenSelfHistoryOverlayWindow, destroySelfHistoryOverlayWindow } from "../windows/selfHistoryOverlayWindow";
+import { initials, type T } from "../utils/formatting";
 
 const TEAM_SIZE = 5;
 const MATCH_ROWS = 6;
 const HISTORY_LOAD_TIMEOUT_MS = 8000;
-
-type T = (key: TranslationKey) => string;
 type TeamTone = "ally" | "enemy";
 
 type MatchRowView = {
@@ -886,13 +885,3 @@ function resultClass(result: MatchResult) {
   return "border-slate-100 bg-slate-50 text-slate-400";
 }
 
-function initials(value: string) {
-  const letters = value
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-
-  return letters || "?";
-}

@@ -4,12 +4,14 @@ import type { MatchResult } from "../backend/types";
 export type T = (key: TranslationKey) => string;
 
 export function initials(value: string): string {
-  return value
+  const letters = value
     .split(/\s+/)
     .filter(Boolean)
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
+
+  return letters || "?";
 }
 
 export function formatTimestamp(value: string | null | undefined, t: T): string {
