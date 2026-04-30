@@ -1,8 +1,7 @@
 import { useAppCore } from "../state/AppStateProvider";
 import type { LeagueClientStatus } from "../backend/types";
-import type { TranslationKey } from "../i18n";
-
-type T = (key: TranslationKey) => string;
+import { Metric, RefreshIcon } from "../components/common";
+import { formatTimestamp, type T } from "../utils/formatting";
 
 export function Dashboard() {
   const { snapshot, isLoading, leagueSelfSnapshot, isLeagueClientLoading, refreshLeagueClient, t } = useAppCore();
@@ -147,20 +146,6 @@ function LeagueStatusBadge({ status, isLoading, t }: { status: LeagueClientStatu
   );
 }
 
-function RefreshIcon() {
-  return (
-    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 24 24">
-      <path
-        d="M20 12a8 8 0 0 1-13.6 5.7M4 12A8 8 0 0 1 17.6 6.3M18 3v4h-4M6 21v-4h4"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
-}
-
 function HealthBadge({ status, t }: { status: "ok" | "degraded" | "loading"; t: T }) {
   const isReady = status === "ok";
 
@@ -184,15 +169,6 @@ function StatusTile({ label, value, tone }: { label: string; value: string; tone
       <p className={["mt-3 text-2xl font-semibold capitalize", tone === "good" ? "text-emerald-700" : "text-amber-700"].join(" ")}>
         {value}
       </p>
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold capitalize text-zinc-950">{value}</p>
     </div>
   );
 }
@@ -242,19 +218,3 @@ function leagueStatusMessage(status: LeagueClientStatus | undefined, isLoading: 
   return t("dashboard.clientUnavailable");
 }
 
-function formatTimestamp(value: string | null | undefined, t: T) {
-  if (!value) {
-    return t("common.pending");
-  }
-
-  const numeric = Number(value);
-  const date = Number.isFinite(numeric)
-    ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1_000)
-    : new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
-}
