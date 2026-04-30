@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { ChampionImage } from "../components/common";
 import { useAppCore, useLeagueAssets } from "../state/AppStateProvider";
 import type { RankedChampionDataStatus, RankedChampionLane, RankedChampionSort, RankedChampionStat } from "../backend/types";
-import type { TranslationKey } from "../i18n";
-
-type T = (key: TranslationKey) => string;
+import { initials, type T } from "../utils/formatting";
 
 const lanes: Array<{ id: RankedChampionLane; label: string; shortLabel: string }> = [
   { id: "top", label: "Top", shortLabel: "TOP" },
@@ -218,7 +217,7 @@ function ChampionRow({
     <div className="grid min-w-[64rem] grid-cols-[4rem_minmax(14rem,1.3fr)_7rem_8rem_8rem_8rem_11rem] items-center gap-3 border-b border-zinc-100 px-5 py-3 last:border-b-0">
       <span className="text-sm font-bold text-zinc-500">#{rank}</span>
       <div className="flex min-w-0 items-center gap-3">
-        <ChampionImage championName={record.championName} imageUrl={imageUrl} />
+        <ChampionImage championName={record.championName} imageUrl={imageUrl} size="lg" />
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-zinc-950">{record.championName}</p>
           <p className="mt-1 text-xs text-zinc-500">{laneLabel(record.lane)}</p>
@@ -255,18 +254,6 @@ function Metric({ isActive, suffix, value }: { isActive: boolean; suffix: string
         {value.toFixed(1)}
         {suffix}
       </span>
-    </div>
-  );
-}
-
-function ChampionImage({ championName, imageUrl }: { championName: string; imageUrl: string | undefined }) {
-  if (imageUrl) {
-    return <img alt={`${championName} icon`} className="h-11 w-11 shrink-0 rounded-md border border-zinc-200 object-cover" src={imageUrl} />;
-  }
-
-  return (
-    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-100 text-sm font-semibold text-zinc-500">
-      {initials(championName)}
     </div>
   );
 }
@@ -358,11 +345,3 @@ function timeSummary(
   return parts.length > 0 ? parts.join(" / ") : `updated ${stats.updatedAt}`;
 }
 
-function initials(value: string) {
-  return value
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-}
